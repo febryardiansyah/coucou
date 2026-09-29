@@ -5,8 +5,15 @@ import AppKit
 struct SettingsView: View {
     @ObservedObject private var state = AppState.shared
     @State private var apiKey: String = KeychainStore.shared.get("anthropic-api-key") ?? ""
+    @State private var openaiBaseURL: String = UserDefaults.standard.string(forKey: "openaiBaseURL") ?? ""
+    @State private var openaiModel: String = UserDefaults.standard.string(forKey: "openaiModel") ?? ""
+    @State private var openaiKey: String = KeychainStore.shared.get("openai-api-key") ?? ""
+    @State private var hermesURL: String = UserDefaults.standard.string(forKey: "hermesURL") ?? ""
+    @State private var hermesSession: String = UserDefaults.standard.string(forKey: "hermesSession") ?? "coucou"
+    @State private var hermesKey: String = KeychainStore.shared.get("hermes-key") ?? ""
     @State private var launchAtStartup: Bool = (SMAppService.mainApp.status == .enabled)
     @State private var statusMessage: String = ""
+    @State private var copilotStatus: String = HookServer.copilotHooksInstalled ? "✓ Installed" : ""
     @State private var showDiff: Bool = false
     @State private var pendingHookJSON: String = ""
     #if APPSTORE
@@ -48,16 +55,62 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
 
-                // MARK: API
-                GroupBox("Anthropic API") {
+                // MARK: Chat provider
+                GroupBox("Chat") {
                     VStack(alignment: .leading, spacing: 8) {
-                        SecureField("API key (sk-ant-…)", text: $apiKey)
-                            .textFieldStyle(.roundedBorder)
-                        Button("Save") {
-                            KeychainStore.shared.set("anthropic-api-key", value: apiKey)
-                            statusMessage = "✓ Key saved."
+                        Picker("Provider", selection: $state.chatProvider) {
+                            ForEach(ChatProvider.allCases) { Text($0.label).tag($0) }
                         }
-                        .buttonStyle(.borderedProminent)
+                        switch state.chatProvider {
+                        case .anthropic:
+                            SecureField("API key (sk-ant-…)", text: $apiKey)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Save") {
+                                KeychainStore.shared.set("anthropic-api-key", value: apiKey)
+                                statusMessage = "✓ Key saved."
+                            }
+                            .buttonStyle(.borderedProminent)
+                        case .openAICompatible:
+                            TextField("Base URL  (https://openrouter.ai/api/v1)", text: $openaiBaseURL)
+                                .textFieldStyle(.roundedBorder)
+                            TextField("Model", text: $openaiModel)
+                                .textFieldStyle(.roundedBorder)
+                            SecureField("API key (optional for local servers)", text: $openaiKey)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Save") {
+                                UserDefaults.standard.set(openaiBaseURL, forKey: "openaiBaseURL")
+                                UserDefaults.standard.set(openaiModel, forKey: "openaiModel")
+                                if openaiKey.isEmpty { KeychainStore.shared.remove("openai-api-key") }
+                                else { KeychainStore.shared.set("openai-api-key", value: openaiKey) }
+                                statusMessage = "✓ Chat settings saved."
+                            }
+                            .buttonStyle(.borderedProminent)
+                        case .copilotCLI:
+                            #if APPSTORE
+                            Text("Not available in the sandboxed build.")
+                                .font(.system(size: 11)).foregroundColor(.secondary)
+                            #else
+                            Text("Runs `copilot -p` with your existing login. Requires Copilot CLI access on your account.")
+                                .font(.system(size: 11)).foregroundColor(.secondary)
+                            #endif
+                        case .hermes:
+                            TextField("Bridge URL  (http://<vps>:8646/chat)", text: $hermesURL)
+                                .textFieldStyle(.roundedBorder)
+                            SecureField("X-Hermes-Key", text: $hermesKey)
+                                .textFieldStyle(.roundedBorder)
+                            TextField("Thread name", text: $hermesSession)
+                                .textFieldStyle(.roundedBorder)
+                            Text("Chats with the agent running on your VPS. The bridge keeps its own thread, so history lives server-side and survives restarts.")
+                                .font(.system(size: 11)).foregroundColor(.secondary)
+                            Button("Save") {
+                                UserDefaults.standard.set(hermesURL, forKey: "hermesURL")
+                                UserDefaults.standard.set(hermesSession, forKey: "hermesSession")
+                                if hermesKey.isEmpty { KeychainStore.shared.remove("hermes-key") }
+                                else { KeychainStore.shared.set("hermes-key", value: hermesKey) }
+                                statusMessage = "✓ Hermes settings saved."
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
                     }
                     .padding(6)
                 }
@@ -120,6 +173,29 @@ struct SettingsView: View {
                     }
                     .padding(6)
                 }
+
+                // MARK: Copilot CLI hooks
+                #if !APPSTORE
+                GroupBox("GitHub Copilot CLI Hooks") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(HookServer.copilotHooksURL.path)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        HStack(spacing: 10) {
+                            Button("Install Copilot hooks") { installCopilotHooks() }
+                                .buttonStyle(.borderedProminent)
+                            Button("Uninstall") { uninstallCopilotHooks() }
+                                .buttonStyle(.bordered)
+                        }
+                        if !copilotStatus.isEmpty {
+                            Text(copilotStatus)
+                                .font(.system(size: 11))
+                                .foregroundColor(copilotStatus.hasPrefix("❌") ? .red : .secondary)
+                        }
+                    }
+                    .padding(6)
+                }
+                #endif
 
                 // MARK: Integrations
                 GroupBox("Integrations") {
@@ -300,6 +376,20 @@ struct SettingsView: View {
                     .padding(6)
                 }
 
+                // MARK: Behavior
+                GroupBox("Behavior") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("Character", selection: $state.botCharacter) {
+                            ForEach(BotCharacter.allCases) { Text($0.label).tag($0) }
+                        }
+                        Toggle("Close when clicking outside", isOn: $state.closeOnClickOutside)
+                        Text("Collapses the island when you click in another app. Stays open while an approval is pending.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(6)
+                }
+
                 // MARK: Hotkey
                 GroupBox("Hotkey") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -443,6 +533,24 @@ struct SettingsView: View {
         }
     }
     #endif
+
+    private func installCopilotHooks() {
+        do {
+            try HookServer.shared.writeCopilotHooks()
+            copilotStatus = "✓ Installed — restart copilot to load the hooks"
+        } catch {
+            copilotStatus = "❌ \(error.localizedDescription)"
+        }
+    }
+
+    private func uninstallCopilotHooks() {
+        do {
+            try HookServer.shared.uninstallCopilotHooks()
+            copilotStatus = "✓ Copilot hooks removed."
+        } catch {
+            copilotStatus = "❌ \(error.localizedDescription)"
+        }
+    }
 
     private func installHooks() {
         do {
