@@ -86,14 +86,6 @@ struct SettingsView: View {
                                 statusMessage = "✓ Chat settings saved."
                             }
                             .buttonStyle(.borderedProminent)
-                        case .copilotCLI:
-                            #if APPSTORE
-                            Text("Not available in the sandboxed build.")
-                                .font(.system(size: 11)).foregroundColor(.secondary)
-                            #else
-                            Text("Runs `copilot -p` with your existing login. Requires Copilot CLI access on your account.")
-                                .font(.system(size: 11)).foregroundColor(.secondary)
-                            #endif
                         case .hermes:
                             TextField("Bridge URL  (http://<vps>:8646/chat)", text: $hermesURL)
                                 .textFieldStyle(.roundedBorder)

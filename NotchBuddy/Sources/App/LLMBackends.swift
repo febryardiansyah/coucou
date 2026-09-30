@@ -5,7 +5,6 @@ import Foundation
 enum ChatProvider: String, CaseIterable, Identifiable {
     case anthropic
     case openAICompatible
-    case copilotCLI
     case hermes
 
     var id: String { rawValue }
@@ -14,7 +13,6 @@ enum ChatProvider: String, CaseIterable, Identifiable {
         switch self {
         case .anthropic:        return "Anthropic (Claude)"
         case .openAICompatible: return "OpenAI-compatible endpoint"
-        case .copilotCLI:       return "GitHub Copilot CLI"
         case .hermes:           return "Hermes (agent on your VPS)"
         }
     }
@@ -26,12 +24,6 @@ enum ChatProvider: String, CaseIterable, Identifiable {
         case .openAICompatible:
             return !(UserDefaults.standard.string(forKey: "openaiBaseURL") ?? "").isEmpty
                 && !(UserDefaults.standard.string(forKey: "openaiModel") ?? "").isEmpty
-        case .copilotCLI:
-            #if APPSTORE
-            return false
-            #else
-            return true
-            #endif
         case .hermes:
             return !(UserDefaults.standard.string(forKey: "hermesURL") ?? "").isEmpty
         }
@@ -118,26 +110,6 @@ extension ClaudeService {
         }
     }
 
-    // MARK: GitHub Copilot CLI (`copilot -p`)
-
-    func chatCopilotCLI(context: PromptContext?, state: AppState) async {
-        #if APPSTORE
-        showError("Copilot CLI is not available in the sandboxed build.", state: state)
-        #else
-        var prompt = systemPrompt + "\n\nConversation so far:\n"
-        for turn in transcript(context: context, state: state) {
-            prompt += "\n\(turn.role == "user" ? "User" : "Assistant"): \(turn.content)"
-        }
-        prompt += "\n\nReply to the last user message."
-
-        let result = await Self.runCopilot(prompt: prompt)
-        switch result {
-        case .success(let text): finishChat(text, state: state)
-        case .failure(let error): showError(error.localizedDescription, state: state)
-        }
-        #endif
-    }
-
     // MARK: Hermes (agent running on your VPS)
 
     /// Chats with the Hermes bridge (`POST {text, session}` -> `{reply}`).
@@ -186,50 +158,4 @@ extension ClaudeService {
             showError("Network error: \(error.localizedDescription)", state: state)
         }
     }
-
-    #if !APPSTORE
-    /// Runs the CLI through a login shell so PATH matches Terminal. The prompt travels in the
-    /// environment to avoid shell quoting. NB_HOOK_DISABLE stops Coucou's own hooks from
-    /// reporting this helper run as a session.
-    nonisolated private static func runCopilot(prompt: String) async -> Result<String, Error> {
-        await withCheckedContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-lc", #"copilot -p "$COUCOU_PROMPT" -s --no-ask-user --no-custom-instructions --available-tools web_search web_fetch"#]
-            process.currentDirectoryURL = FileManager.default.temporaryDirectory
-            var env = ProcessInfo.processInfo.environment
-            env["COUCOU_PROMPT"] = prompt
-            env["NB_HOOK_DISABLE"] = "1"
-            process.environment = env
-            let out = Pipe(), err = Pipe()
-            process.standardOutput = out
-            process.standardError = err
-            process.standardInput = FileHandle.nullDevice
-
-            let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 120, execute: timeout)
-
-            DispatchQueue.global().async {
-                do { try process.run() } catch {
-                    timeout.cancel()
-                    continuation.resume(returning: .failure(error))
-                    return
-                }
-                let outData = out.fileHandleForReading.readDataToEndOfFile()
-                let errData = err.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                timeout.cancel()
-                let text = String(data: outData, encoding: .utf8) ?? ""
-                if process.terminationStatus == 0 {
-                    continuation.resume(returning: .success(text))
-                } else {
-                    let raw = String(data: errData, encoding: .utf8) ?? text
-                    let first = raw.split(separator: "\n").first.map(String.init) ?? "copilot exited with \(process.terminationStatus)"
-                    continuation.resume(returning: .failure(NSError(domain: "CopilotCLI", code: Int(process.terminationStatus),
-                        userInfo: [NSLocalizedDescriptionKey: String(first.prefix(200))])))
-                }
-            }
-        }
-    }
-    #endif
 }

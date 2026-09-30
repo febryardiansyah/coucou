@@ -136,7 +136,6 @@ final class ClaudeService {
         switch state.chatProvider {
         case .anthropic: break
         case .openAICompatible: return await chatOpenAICompatible(context: context, state: state)
-        case .copilotCLI:       return await chatCopilotCLI(context: context, state: state)
         case .hermes:           return await chatHermes(context: context, state: state)
         }
         guard let key = apiKey, !key.isEmpty else {
