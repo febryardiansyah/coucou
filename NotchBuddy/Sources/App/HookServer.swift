@@ -208,6 +208,7 @@ final class HookServer: @unchecked Sendable {
             }
 
         case "Stop":
+            upsertTask(projectName: projectName, cwd: cwd, payload: payload)
             state.updateTask(id: "integration_claude", state: .finished)
             if let message = payload["message"] as? String, !message.isEmpty {
                 appendStep(id: "integration_claude", step: String(message.prefix(60)))
@@ -534,12 +535,17 @@ final class HookServer: @unchecked Sendable {
         guard let idx = state.tasks.firstIndex(where: { $0.id == "integration_claude" }) else { return }
         state.tasks[idx].name = projectName
         if !cwd.isEmpty { state.tasks[idx].sessionCwd = cwd }
-        switch payload["agent"] as? String {
+        // VS Code's Copilot also loads ~/.claude/settings.json hooks: those events arrive tagged "claude"
+        let aiAgent = (payload["ai_agent"] as? String ?? "").lowercased()
+        let agent = aiAgent.contains("copilot") ? "copilot" : payload["agent"] as? String
+        switch agent {
         case "copilot":
             // Copilot running inside VS Code (either harness) vs Copilot CLI in a terminal
-            let host = ((payload["bundle_id"] as? String ?? "") + (payload["term_program"] as? String ?? "")).lowercased()
+            let host = ((payload["bundle_id"] as? String ?? "") + (payload["term_program"] as? String ?? "")
+                        + (payload["ai_agent"] as? String ?? "")).lowercased()
             let inVSCode = payload["harness"] as? String == "vscode" || host.contains("vscode")
-            state.tasks[idx].agentLabel = inVSCode ? "Copilot" : "Copilot CLI"
+            // Once a session is seen in VS Code it stays there, whatever later hooks report
+            state.tasks[idx].agentLabel = (inVSCode || state.tasks[idx].agentLabel == "Copilot") ? "Copilot" : "Copilot CLI"
         case "claude":
             state.tasks[idx].agentLabel = "Claude Code"
         default:
@@ -1112,6 +1118,7 @@ def main():
     payload.setdefault('iterm_session_id', env.get('ITERM_SESSION_ID', ''))
     payload.setdefault('term_session_id', env.get('TERM_SESSION_ID', ''))
     payload.setdefault('bundle_id', env.get('__CFBundleIdentifier', ''))
+    payload.setdefault('ai_agent', env.get('AI_AGENT', ''))
     if 'cwd' not in payload or not payload['cwd']:
         payload['cwd'] = os.getcwd()
 

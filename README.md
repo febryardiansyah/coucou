@@ -25,19 +25,21 @@ Approve permissions, answer questions, watch your agents work, drop a file, chat
 Some studios showed off gorgeous notch companions… and never let anyone use them.
 **Coucou is the open version.** Every line of code, every animation, every sound — free to use, read, fork and remix.
 
-Meet **Mochi**: a soft little squircle with big eyes that pops out of your notch, waves hello, follows your cursor with its eyes, gets annoyed when you poke it (and dizzy if you insist), and tells you the moment Claude Code needs you.
+Meet **Mochi**: a soft little squircle with big eyes that pops out of your notch, waves hello, follows your cursor with its eyes, gets annoyed when you poke it (and dizzy if you insist), and tells you the moment Claude Code needs you. Prefer a different friend? Switch to **Bibol**, the orange tabby cat, in **Settings → Behavior → Character**.
 
 ## Features
 
 - 🤖 **Claude Code, live** — see every session in your notch: what it reads, edits and runs, step by step. Finished? Mochi does a happy little jump.
 - ✅ **Approve from the notch** — permission requests show up with **Allow / Always / Deny**. Questions come with their answer buttons. One click, back to work.
+- 🐙 **GitHub Copilot too** — Copilot CLI and Copilot agent sessions in VS Code show up the same way: live steps, approvals in the notch, finished and error states.
+- ✏️ **Live edit preview** — watch the file being edited as a small diff with real line numbers; click it to open the file at that line in VS Code.
 - 🧑‍💻 **Jump to the right terminal** — open the exact terminal window of a session.
-- 💬 **Ask Claude anything** — built-in chat, straight from the notch.
+- 💬 **Ask anything** — built-in chat straight from the notch, backed by Anthropic (Claude), any OpenAI-compatible endpoint, or your own Hermes agent.
 - 📎 **Drop a file on the notch** — Mochi turns into a box and swallows it, then ask a question about it or send it by email (Mail.app).
 - 🪟 **Drag Mochi onto any window** — attach that window as context for Claude.
 - 🔌 **Integrations** — Stripe payments, n8n workflows, GitHub, Vercel deployments, Resend emails, Notion, Cal.com. Each one gets its own little colored Mochi.
 - 🧠 **Chat with your own agent** — point the chat at **Hermes** running on your VPS and every message becomes a real agent session, with its memory, skills and tools. Its alerts surface as a pill too. See [docs/HERMES.md](docs/HERMES.md).
-- 🎭 **A real character** — idle breathing, blinks, eyes on a sphere that follow your mouse, emotes, 28 handcrafted sounds, a greeting on launch.
+- 🎭 **A real character** (Mochi or Bibol) — idle breathing, blinks, eyes on a sphere that follow your mouse, emotes, 28 handcrafted sounds, a greeting on launch.
 - 🫥 **Invisible when idle** — hides away when nothing is running, peeks out when you hover the notch.
 - 🔒 **Private by design** — no telemetry, no account. Keys live in your macOS Keychain. The app only talks to the services you plug in.
 
@@ -79,7 +81,8 @@ Click the Coucou icon in the menu bar → **Settings…**
 | What | Why | Where the key goes |
 |---|---|---|
 | **Claude Code hooks** | live sessions, approvals, questions | **Install hooks** — Coucou backs up `~/.claude/settings.json`, merges its hooks and shows you the diff before writing anything |
-| **Anthropic API key** | chat and questions about files/windows | Keychain |
+| **Copilot hooks** (CLI and/or VS Code) | Copilot sessions and approvals in the notch | **Install Copilot hooks** / **Install VS Code hooks** — restart Copilot CLI afterwards |
+| **Chat provider** | chat and questions about files/windows | Anthropic API key (Keychain), an OpenAI-compatible endpoint (base URL + model), or Hermes |
 | Stripe, n8n, GitHub, Vercel, Resend, Notion, Cal.com | the integration pills | Keychain, all optional |
 | **Hermes** (agent on your VPS) | chat + alert pill from your own agent | Bridge URL + key in Settings — one-command server setup in [docs/HERMES.md](docs/HERMES.md) |
 
@@ -100,8 +103,8 @@ If Coucou isn't running, the hook exits immediately: **Claude Code is never bloc
 ## How it works
 
 - **Island**: a borderless `NSPanel` hugging the notch, driven by a small state machine (`hidden → petit → home`).
-- **Character**: drawn in SwiftUI `Canvas` + `TimelineView` at 60 fps — squircle body, eyes projected on a sphere, spring animations. No Rive, no Lottie, no images.
-- **Claude Code**: a tiny `nb-hook` script receives hook events and forwards them over a Unix socket to the app. For approvals it waits for your click, then answers the hook.
+- **Character**: Mochi and Bibol are drawn in SwiftUI `Canvas` + `TimelineView` at 60 fps — squircle body, eyes projected on a sphere, spring animations. No Rive, no Lottie, no images.
+- **Claude Code & Copilot**: a tiny `nb-hook` script receives hook events and forwards them over a Unix socket to the app. For approvals it waits for your click, then answers the hook.
 - **Integrations**: lightweight pollers, paused when nothing is watching.
 - **Sounds**: 28 short WAVs played through preloaded `AVAudioPlayer`s.
 
@@ -119,11 +122,11 @@ Inspired by the notch-companion concepts shared by design studios — this proje
 ## License
 
 - **Code:** [MIT](LICENSE) — use it, fork it, learn from it, just keep the copyright notice.
-- **Name, Mochi character, icon, sounds and media:** © Louis Raillé, all rights reserved — see [LICENSE-ASSETS.md](LICENSE-ASSETS.md). Shipping your own fork? Give it your own name and character.
+- **Name, Mochi character, Bibol character, icon, sounds and media:** © Louis Raillé, all rights reserved — see [LICENSE-ASSETS.md](LICENSE-ASSETS.md). Shipping your own fork? Give it your own name and character.
 
 <div align="center">
 
-**If Mochi made you smile, a ⭐ helps a lot.**
+**If Mochi (or Bibol) made you smile, a ⭐ helps a lot.**
 
 [Website](https://louis-cfm.github.io/coucou/) · [Privacy](https://louis-cfm.github.io/coucou/privacy.html) · [Terms](https://louis-cfm.github.io/coucou/terms.html) · [Support](https://louis-cfm.github.io/coucou/support.html)
 

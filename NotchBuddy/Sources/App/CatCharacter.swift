@@ -11,7 +11,7 @@ enum BotCharacter: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .mochi: return "Mochi"
-        case .cat:   return "Orange cat"
+        case .cat:   return "Bibol"
         }
     }
 }
