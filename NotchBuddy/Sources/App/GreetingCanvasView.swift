@@ -262,11 +262,9 @@ private func mochiPath(hw: CGFloat, hh: CGFloat) -> CGPath {
 }
 
 // Linear gradient fill clipped to path (body-local coords, centered at origin)
-private func whiteFill(_ ctx: CGContext, _ path: CGPath,
-                        x0: CGFloat, y0: CGFloat, x1: CGFloat, y1: CGFloat) {
-    let cs   = CGColorSpaceCreateDeviceRGB()
-    let c0   = CGColor(red: 251/255, green: 251/255, blue: 252/255, alpha: 1)
-    let c1   = CGColor(red: 231/255, green: 233/255, blue: 236/255, alpha: 1)
+private func gradFill(_ ctx: CGContext, _ path: CGPath, _ c0: CGColor, _ c1: CGColor,
+                      x0: CGFloat, y0: CGFloat, x1: CGFloat, y1: CGFloat) {
+    let cs = CGColorSpaceCreateDeviceRGB()
     guard let g = CGGradient(colorsSpace: cs, colors: [c0,c1] as CFArray, locations: [0,1]) else { return }
     ctx.saveGState()
     ctx.addPath(path); ctx.clip()
@@ -274,7 +272,172 @@ private func whiteFill(_ ctx: CGContext, _ path: CGPath,
     ctx.restoreGState()
 }
 
-private func drawHandL(_ ctx: CGContext, hw: CGFloat, hh: CGFloat, p: GreetPose) {
+private func whiteFill(_ ctx: CGContext, _ path: CGPath,
+                        x0: CGFloat, y0: CGFloat, x1: CGFloat, y1: CGFloat) {
+    gradFill(ctx, path,
+             CGColor(red: 251/255, green: 251/255, blue: 252/255, alpha: 1),
+             CGColor(red: 231/255, green: 233/255, blue: 236/255, alpha: 1),
+             x0: x0, y0: y0, x1: x1, y1: y1)
+}
+
+/// Body/paw material: off-white for Mochi, orange fur for the cat.
+private func bodyFill(_ ctx: CGContext, _ path: CGPath, cat: Bool,
+                      x0: CGFloat, y0: CGFloat, x1: CGFloat, y1: CGFloat) {
+    if cat {
+        gradFill(ctx, path, GCat.furTop, GCat.furBottom, x0: x0, y0: y0, x1: x1, y1: y1)
+    } else {
+        whiteFill(ctx, path, x0: x0, y0: y0, x1: x1, y1: y1)
+    }
+}
+
+// MARK: - Cat variant (CoreGraphics port of CatCharacter.swift, same greeting pose)
+
+private enum GCat {
+    static var furTop:    CGColor { gHex("#FFB351") }
+    static var furBottom: CGColor { gHex("#EF731B") }
+    static var stripe:    CGColor { gHex("#BD530E", alpha: 0.85) }
+    static var cream:     CGColor { gHex("#FFF1DC") }
+    static var innerEar:  CGColor { gHex("#FFB4A8") }
+    static var nose:      CGColor { gHex("#E8798A") }
+    static var mouth:     CGColor { gHex("#5A2A19") }
+}
+
+/// Ears and tail — drawn before the body so the body covers their roots.
+private func drawCatBehindG(_ ctx: CGContext, R: CGFloat, t: Double) {
+    let flick = CGFloat(pow(max(0, sin(t * 0.8)), 24)) * 0.07 * R
+    ctx.saveGState()
+    ctx.setLineCap(.round); ctx.setLineJoin(.round)
+    for s: CGFloat in [-1, 1] {
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: s * x * R, y: y * R) }
+        let tipShift = s > 0 ? flick : 0
+
+        let outer = CGMutablePath()
+        outer.move(to: pt(1.00, -0.42))
+        outer.addLine(to: CGPoint(x: s * 0.84 * R, y: -1.22 * R + tipShift))
+        outer.addLine(to: pt(0.26, -0.84))
+        outer.closeSubpath()
+
+        let inner = CGMutablePath()
+        inner.move(to: pt(0.84, -0.56))
+        inner.addLine(to: CGPoint(x: s * 0.77 * R, y: -1.00 * R + tipShift))
+        inner.addLine(to: pt(0.44, -0.80))
+        inner.closeSubpath()
+
+        ctx.addPath(outer)
+        ctx.setStrokeColor(GCat.furBottom); ctx.setLineWidth(R * 0.14); ctx.strokePath()
+        gradFill(ctx, outer, GCat.furTop, GCat.furBottom, x0: 0, y0: -1.2 * R, x1: 0, y1: -0.4 * R)
+        ctx.addPath(inner)
+        ctx.setStrokeColor(GCat.innerEar); ctx.setLineWidth(R * 0.08); ctx.strokePath()
+        ctx.addPath(inner); ctx.setFillColor(GCat.innerEar); ctx.fillPath()
+    }
+
+    let wag = CGFloat(sin(t * 2.6)) * 0.14 * R
+    ctx.beginPath()
+    ctx.move(to: CGPoint(x: 0.82 * R, y: 0.50 * R))
+    ctx.addQuadCurve(to: CGPoint(x: 1.34 * R + wag * 0.4, y: -0.06 * R + wag),
+                     control: CGPoint(x: 1.46 * R, y: 0.62 * R))
+    let tail = ctx.path
+    ctx.setStrokeColor(gHex("#BD530E")); ctx.setLineWidth(R * 0.30); ctx.strokePath()
+    if let tail { ctx.addPath(tail) }
+    ctx.setStrokeColor(GCat.furBottom); ctx.setLineWidth(R * 0.22); ctx.strokePath()
+    ctx.restoreGState()
+}
+
+/// Tabby stripes, edge shading, highlight and muzzle — all clipped to the body.
+private func drawCatFaceG(_ ctx: CGContext, path: CGPath, R: CGFloat, rx: CGFloat, ry: CGFloat,
+                          dx: CGFloat, dy: CGFloat) {
+    ctx.saveGState()
+    ctx.addPath(path); ctx.clip()
+    ctx.setLineCap(.round)
+    ctx.setStrokeColor(GCat.stripe)
+
+    let sdx = dx * 0.6
+    ctx.setLineWidth(R * 0.09)
+    for i in -1...1 {
+        let fi = CGFloat(i)
+        let x = fi * 0.26 * R + sdx
+        ctx.beginPath()
+        ctx.move(to: CGPoint(x: x, y: -ry * 1.02))
+        ctx.addQuadCurve(to: CGPoint(x: x + fi * 0.03 * R, y: -ry * 0.46),
+                         control: CGPoint(x: x + fi * 0.08 * R, y: -ry * 0.74))
+        ctx.strokePath()
+    }
+    ctx.setLineWidth(R * 0.08)
+    for sd: CGFloat in [-1, 1] {
+        for j in 0..<2 {
+            let y = ry * (0.10 + CGFloat(j) * 0.20)
+            ctx.beginPath()
+            ctx.move(to: CGPoint(x: sd * rx * 1.02 + sdx, y: y))
+            ctx.addLine(to: CGPoint(x: sd * rx * 0.80 + sdx, y: y + ry * 0.05))
+            ctx.strokePath()
+        }
+    }
+
+    let cs = CGColorSpaceCreateDeviceRGB()
+    if let edge = CGGradient(colorsSpace: cs,
+                             colors: [gHex("#000000", alpha: 0), gHex("#000000", alpha: 0),
+                                      gHex("#000000", alpha: 0.18)] as CFArray,
+                             locations: [0, 0.6, 1]) {
+        ctx.drawRadialGradient(edge, startCenter: .zero, startRadius: R * 0.15,
+                               endCenter: .zero, endRadius: R * 1.25, options: [.drawsAfterEndLocation])
+    }
+    if let hi = CGGradient(colorsSpace: cs,
+                           colors: [gHex("#FFFFFF", alpha: 0.35), gHex("#FFFFFF", alpha: 0)] as CFArray,
+                           locations: [0, 1]) {
+        let c = CGPoint(x: rx * 0.34, y: -ry * 0.46)
+        ctx.drawRadialGradient(hi, startCenter: c, startRadius: 0, endCenter: c, endRadius: R * 0.42, options: [])
+    }
+
+    // Muzzle, nose, mouth (follow the eyes' look offset)
+    ctx.setFillColor(GCat.cream)
+    ctx.fillEllipse(in: CGRect(x: dx - 0.34 * R, y: dy + 0.24 * R, width: 0.68 * R, height: 0.46 * R))
+
+    let nx = dx, ny = dy + 0.34 * R, nw = 0.10 * R
+    ctx.beginPath()
+    ctx.move(to: CGPoint(x: nx - nw, y: ny))
+    ctx.addLine(to: CGPoint(x: nx + nw, y: ny))
+    ctx.addLine(to: CGPoint(x: nx, y: ny + 0.08 * R))
+    ctx.closePath()
+    let nose = ctx.path
+    ctx.setFillColor(GCat.nose); ctx.fillPath()
+    if let nose { ctx.addPath(nose) }
+    ctx.setStrokeColor(GCat.nose); ctx.setLineWidth(R * 0.03); ctx.setLineJoin(.round); ctx.strokePath()
+
+    let my = ny + 0.08 * R
+    ctx.beginPath()
+    ctx.move(to: CGPoint(x: nx, y: my))
+    ctx.addLine(to: CGPoint(x: nx, y: my + 0.05 * R))
+    ctx.addQuadCurve(to: CGPoint(x: nx - 0.13 * R, y: my + 0.06 * R),
+                     control: CGPoint(x: nx - 0.06 * R, y: my + 0.14 * R))
+    ctx.move(to: CGPoint(x: nx, y: my + 0.05 * R))
+    ctx.addQuadCurve(to: CGPoint(x: nx + 0.13 * R, y: my + 0.06 * R),
+                     control: CGPoint(x: nx + 0.06 * R, y: my + 0.14 * R))
+    ctx.setStrokeColor(GCat.mouth); ctx.setLineWidth(max(1, R * 0.025)); ctx.strokePath()
+    ctx.restoreGState()
+}
+
+/// Whiskers extend past the body, so they are drawn unclipped after the eyes.
+private func drawCatWhiskersG(_ ctx: CGContext, R: CGFloat, dx: CGFloat, dy: CGFloat,
+                              t: Double, alpha: CGFloat) {
+    guard alpha > 0.01 else { return }
+    ctx.saveGState()
+    ctx.setStrokeColor(gHex("#FFFFFF", alpha: 0.9 * alpha))
+    ctx.setLineWidth(max(1, R * 0.02)); ctx.setLineCap(.round)
+    for s: CGFloat in [-1, 1] {
+        for i in 0..<3 {
+            let fi = CGFloat(i)
+            let y0 = dy + (0.42 + fi * 0.07) * R
+            let twitch = CGFloat(sin(t * 1.7 + Double(i))) * 0.012 * R
+            ctx.beginPath()
+            ctx.move(to: CGPoint(x: dx + s * 0.30 * R, y: y0))
+            ctx.addLine(to: CGPoint(x: dx + s * 0.98 * R, y: y0 + (fi - 1) * 0.09 * R + twitch))
+            ctx.strokePath()
+        }
+    }
+    ctx.restoreGState()
+}
+
+private func drawHandL(_ ctx: CGContext, hw: CGFloat, hh: CGFloat, p: GreetPose, cat: Bool) {
     let k = CGFloat(p.handL); guard k > 0.01 else { return }
     let hb = hh*2, r = hb*0.15*k
     let rx = gLerpF(-hw*0.35, -hw-hb*0.22, k)
@@ -284,14 +447,14 @@ private func drawHandL(_ ctx: CGContext, hw: CGFloat, hh: CGFloat, p: GreetPose)
     ctx.saveGState()
     ctx.translateBy(x: rx, y: CGFloat(ry))
     let circ = CGPath(ellipseIn: CGRect(x: -r, y: -r, width: r*2, height: r*2), transform: nil)
-    whiteFill(ctx, circ, x0: r, y0: -r, x1: -r, y1: r)
+    bodyFill(ctx, circ, cat: cat, x0: r, y0: -r, x1: -r, y1: r)
     ctx.addEllipse(in: CGRect(x: -r, y: -r, width: r*2, height: r*2))
     ctx.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.08))
     ctx.setLineWidth(0.8); ctx.strokePath()
     ctx.restoreGState()
 }
 
-private func drawHandR(_ ctx: CGContext, hw: CGFloat, hh: CGFloat, p: GreetPose) {
+private func drawHandR(_ ctx: CGContext, hw: CGFloat, hh: CGFloat, p: GreetPose, cat: Bool) {
     let k = CGFloat(p.handR); guard k > 0.01 else { return }
     let hb = hh*2, L = hb*0.40*k, T2 = hb*0.22*k
     let rx0 = gLerpF(hw*0.35, hw+hb*0.20, k)
@@ -306,14 +469,14 @@ private func drawHandR(_ ctx: CGContext, hw: CGFloat, hh: CGFloat, p: GreetPose)
     let cap = CGMutablePath()
     gRR(ctx, -L/2, -T2/2, L, T2, T2/2)
     cap.addPath(ctx.path!); ctx.beginPath()  // use current ctx path as clip path
-    whiteFill(ctx, cap, x0: L/2, y0: -T2/2, x1: -L/2, y1: T2/2)
+    bodyFill(ctx, cap, cat: cat, x0: L/2, y0: -T2/2, x1: -L/2, y1: T2/2)
     gRR(ctx, -L/2, -T2/2, L, T2, T2/2)
     ctx.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.08))
     ctx.setLineWidth(0.8); ctx.strokePath()
     ctx.restoreGState()
 }
 
-private func drawMochi(_ ctx: CGContext, p: GreetPose) {
+private func drawMochi(_ ctx: CGContext, p: GreetPose, t: Double, cat: Bool) {
     let hh = CGFloat(p.hb/2), hw = hh*GASP; guard hh > 0.4 else { return }
 
     // Halo (golden → blue) — soft diffuse aura, two-pass for smoothness
@@ -355,18 +518,28 @@ private func drawMochi(_ ctx: CGContext, p: GreetPose) {
     ctx.rotate(by: CGFloat(p.tilt))
     ctx.scaleBy(x: CGFloat(p.sx), y: CGFloat(p.sy))
 
+    // Engine-equivalent radius (BotEngine: ry = 0.88R)
+    let R = hh / 0.88
+    // Face offset shared by eyes and cat muzzle/whiskers
+    let lx = CGFloat(p.lookX)*hw*0.42
+    let fy = CGFloat(p.lookY)*hh*0.28 + CGFloat(p.eyeRoll)*hh*1.25
+
+    // Ears + tail behind everything (cat only)
+    if cat { drawCatBehindG(ctx, R: R, t: t) }
+
     // Hands behind body
-    drawHandL(ctx, hw: hw, hh: hh, p: p)
-    drawHandR(ctx, hw: hw, hh: hh, p: p)
+    drawHandL(ctx, hw: hw, hh: hh, p: p, cat: cat)
+    drawHandR(ctx, hw: hw, hh: hh, p: p, cat: cat)
 
     // Body
     let mpath = mochiPath(hw: hw, hh: hh)
-    whiteFill(ctx, mpath, x0: hw*0.6, y0: -hh, x1: -hw*0.6, y1: hh)
+    bodyFill(ctx, mpath, cat: cat, x0: hw*0.6, y0: -hh, x1: -hw*0.6, y1: hh)
 
-    // Blue tint overlay
-    if p.tint > 0 {
+    // Blue tint overlay (lighter on the cat so the fur stays orange)
+    let tintA = cat ? p.tint * 0.4 : p.tint
+    if tintA > 0 {
         let cs = CGColorSpaceCreateDeviceRGB()
-        let c0 = CGColor(red: 127/255, green: 180/255, blue: 234/255, alpha: CGFloat(p.tint))
+        let c0 = CGColor(red: 127/255, green: 180/255, blue: 234/255, alpha: CGFloat(tintA))
         let c1 = CGColor(red: 127/255, green: 180/255, blue: 234/255, alpha: 0)
         if let g = CGGradient(colorsSpace: cs, colors: [c0,c1] as CFArray, locations: [0,1]) {
             ctx.saveGState()
@@ -376,6 +549,8 @@ private func drawMochi(_ ctx: CGContext, p: GreetPose) {
         }
     }
 
+    if cat { drawCatFaceG(ctx, path: mpath, R: R, rx: hw, ry: hh, dx: lx, dy: fy) }
+
     // Eyes (clipped to body)
     ctx.saveGState()
     ctx.addPath(mpath); ctx.clip()
@@ -383,8 +558,7 @@ private func drawMochi(_ ctx: CGContext, p: GreetPose) {
     ctx.setStrokeColor(gHex("#16171A"))
     let er = CGFloat(p.hb*0.06)
     let sp = CGFloat(p.hb*0.19)
-    let lx = CGFloat(p.lookX)*hw*0.42
-    let ly = CGFloat(p.lookY)*hh*0.28 + hh*0.12 + CGFloat(p.eyeRoll)*hh*1.25
+    let ly = fy + hh*0.12
     for sd: CGFloat in [-1, 1] {
         ctx.saveGState()
         ctx.translateBy(x: sd*sp+lx, y: ly)
@@ -410,6 +584,12 @@ private func drawMochi(_ ctx: CGContext, p: GreetPose) {
         ctx.restoreGState()
     }
     ctx.restoreGState()
+
+    if cat {
+        // Hide whiskers while the face dips out of view
+        drawCatWhiskersG(ctx, R: R, dx: lx, dy: fy, t: t,
+                         alpha: CGFloat(max(0, 1 - p.eyeRoll * 1.5)))
+    }
 
     // Activity badge (top-left corner)
     if p.badge > 0.01 {
@@ -513,7 +693,7 @@ private func drawMinis(_ ctx: CGContext, alpha: Double) {
 
 // MARK: - Full draw function
 
-private func drawGreeting(_ ctx: CGContext, size: CGSize, t: Double, tc: Double) {
+private func drawGreeting(_ ctx: CGContext, size: CGSize, t: Double, tc: Double, character: BotCharacter) {
     let p = pose(t, tc: tc)
 
     // Card background (dark panel)
@@ -539,7 +719,7 @@ private func drawGreeting(_ ctx: CGContext, size: CGSize, t: Double, tc: Double)
 
     // drawHeader: no icons during greeting
     drawMinis(ctx, alpha: p.minis)
-    drawMochi(ctx, p: p)
+    drawMochi(ctx, p: p, t: t, cat: character == .cat)
 }
 
 // MARK: - SwiftUI View
@@ -559,9 +739,10 @@ struct GreetingCanvasView: View {
     var body: some View {
         TimelineView(.animation) { timeline in
             let t = timeline.date.timeIntervalSince(startDate)
+            let character = state.botCharacter
             Canvas { context, size in
                 context.withCGContext { cgCtx in
-                    drawGreeting(cgCtx, size: size, t: t, tc: tc)
+                    drawGreeting(cgCtx, size: size, t: t, tc: tc, character: character)
                 }
             }
             // Fire greetComplete exactly once at T.end (when no hover)

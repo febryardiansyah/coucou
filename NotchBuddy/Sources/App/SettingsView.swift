@@ -194,7 +194,7 @@ struct SettingsView: View {
                         Text(HookServer.copilotVSCodeHooksURL.path)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(.secondary)
-                        Text("Shows Copilot agent sessions from VS Code. Approvals stay in VS Code. Install this or the CLI hooks, not both.")
+                        Text("Shows Copilot agent sessions from VS Code (Local and Copilot CLI harnesses): live steps, approvals in the notch, finished and error states. Unanswered approvals fall back to VS Code's own prompt after ~2 min. Works alongside the CLI hooks: each session is reported once.")
                             .font(.system(size: 11)).foregroundColor(.secondary)
                         HStack(spacing: 10) {
                             Button("Install VS Code hooks") { installCopilotVSCodeHooks() }

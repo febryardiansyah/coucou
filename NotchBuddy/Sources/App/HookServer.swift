@@ -28,7 +28,9 @@ final class HookServer: @unchecked Sendable {
     // No approval blocking state — notch is notification-only, user answers in VS Code
 
     private var serverFD: Int32 = -1
-    private var pendingApprovalFD: Int32 = -1   // held open while user decides
+    /// Approvals waiting on the user, shown one at a time (first = on screen). Main actor only.
+    private var approvalQueue: [PendingApproval] = []
+    private var copilotAlwaysAllowedTools: Set<String> = []
     private var activeSessionId: String? = nil  // current Claude Code session
 
     private init() {}
@@ -38,6 +40,8 @@ final class HookServer: @unchecked Sendable {
     func start() {
         #if !APPSTORE
         installHookScript()
+        // Rewrite older installs that lack events or the --vscode flag
+        if Self.copilotVSCodeHooksInstalled { try? writeCopilotVSCodeHooks() }
         #endif
         Thread.detachNewThread { self.serverThread() }
     }
@@ -99,6 +103,9 @@ final class HookServer: @unchecked Sendable {
         if eventName == "PermissionRequest" {
             // Hold fd open — Claude Code waits for our decision (up to 120s)
             Task { @MainActor in self.processPermissionRequest(fd: fd, payload: payload) }
+        } else if eventName == "PreToolUse" && payload["harness"] as? String == "vscode" {
+            // VS Code's Local harness has no PermissionRequest: the hook waits on PreToolUse instead
+            Task { @MainActor in self.processVSCodePreToolUse(fd: fd, payload: payload) }
         } else {
             Task { @MainActor in self.processEvent(name: eventName, payload: payload) }
             sendLine(fd: fd, text: #"{"ok":true}"#)
@@ -132,18 +139,25 @@ final class HookServer: @unchecked Sendable {
 
         let focused = state.focusId == "integration_claude"
 
+        // The agent moved on, so a VS Code-only permission prompt has been answered there
+        if name != "Notification", state.pendingApproval?.answerInVSCode == true, approvalQueue.isEmpty {
+            finishApprovalUI()
+        }
+
         switch name {
 
         case "SessionStart":
+            // VS Code's Local harness never sends SessionEnd: a new Copilot session replaces the old one
+            if payload["agent"] as? String == "copilot", activeSessionId != sessionId { clearSession() }
             activeSessionId = sessionId
-            upsertTask(projectName: projectName, cwd: cwd)
+            upsertTask(projectName: projectName, cwd: cwd, payload: payload)
             nbLog("SessionStart \(projectName) (\(sessionId.prefix(8)))")
             if state.isPresent { expandIfNeeded(to: .overview) }
             SoundEngine.shared.play("work")
 
         case "UserPromptSubmit":
             activeSessionId = sessionId
-            upsertTask(projectName: projectName, cwd: cwd)
+            upsertTask(projectName: projectName, cwd: cwd, payload: payload)
             state.updateTask(id: "integration_claude", state: .thinking)
             if let message = (payload["message"] as? String) ?? (payload["prompt"] as? String), !message.isEmpty {
                 appendStep(id: "integration_claude", step: String(message.prefix(60)))
@@ -152,7 +166,7 @@ final class HookServer: @unchecked Sendable {
 
         case "PreToolUse":
             activeSessionId = sessionId
-            upsertTask(projectName: projectName, cwd: cwd)
+            upsertTask(projectName: projectName, cwd: cwd, payload: payload)
             state.updateTask(id: "integration_claude", state: .working)
             let tool = payload["tool_name"] as? String ?? "Tool"
             let input = payload["tool_input"] as? [String: Any] ?? [:]
@@ -173,7 +187,19 @@ final class HookServer: @unchecked Sendable {
             if lower.contains("rate limit") || lower.contains("limite d") {
                 state.updateTask(id: "integration_claude", state: .ratelimit)
                 SoundEngine.shared.play("rate")
-            } else if message.hasSuffix("?") {
+            } else if payload["notification_type"] as? String == "permission_prompt",
+                      payload["agent"] as? String == "copilot", approvalQueue.isEmpty {
+                // Read/path permissions skip the permissionRequest hook: point the user to VS Code
+                nbLog("Permission prompt in VS Code: \(message)")
+                upsertTask(projectName: projectName, cwd: cwd, payload: payload)
+                state.updateTask(id: "integration_claude", state: .approval)
+                state.pendingApproval = ApprovalInfo(sessionId: sessionId,
+                                                     tool: payload["title"] as? String ?? "Permission needed",
+                                                     command: message, isCopilot: true, answerInVSCode: true)
+                SoundEngine.shared.play("approval")
+                if focused { expandIfNeeded(to: .approval) }
+                else { setPillBadge(id: "integration_claude", badge: .approval) }
+            } else if payload["notification_type"] as? String == "elicitation_dialog" || message.hasSuffix("?") {
                 state.updateTask(id: "integration_claude", state: .question)
                 appendStep(id: "integration_claude", step: message)
             }
@@ -194,6 +220,10 @@ final class HookServer: @unchecked Sendable {
                 self.clearPillBadge(id: "integration_claude")
             }
 
+        case "ErrorOccurred" where payload["recoverable"] as? Bool == true:
+            // Copilot retries these itself (e.g. model call timeouts): note it, keep working
+            appendStep(id: "integration_claude", step: "⚠ " + String(errorSummary(payload).prefix(58)))
+
         case "StopFailure", "ErrorOccurred":
             state.updateTask(id: "integration_claude", state: .error)
             SoundEngine.shared.play("error")
@@ -209,7 +239,8 @@ final class HookServer: @unchecked Sendable {
             clearSession()
 
         case "SubagentStart":
-            appendStep(id: "integration_claude", step: "+ subagent")
+            let name = (payload["agent_display_name"] ?? payload["agent_name"] ?? payload["agent_type"]) as? String
+            appendStep(id: "integration_claude", step: name.map { "+ subagent · \($0)" } ?? "+ subagent")
 
         case "SubagentStop":
             appendStep(id: "integration_claude", step: "• subagent done")
@@ -266,78 +297,227 @@ final class HookServer: @unchecked Sendable {
         }
 
         let tool = payload["tool_name"] as? String ?? "Tool"
-        var command = tool
-        if let input = payload["tool_input"] as? [String: Any] {
-            command = input["command"] as? String ?? tool
+        let input = payload["tool_input"] as? [String: Any] ?? [:]
+        let command = approvalSummary(tool: tool, input: input)
+        // Copilot (VS Code or CLI) keeps its own prompt: an unanswered request hands back to it
+        let fromCopilot = payload["agent"] as? String == "copilot"
+        let alwaysKey = "\(sessionId)|\(tool)"
+        if fromCopilot && copilotAlwaysAllowedTools.contains(alwaysKey) {
+            nbLog("PermissionRequest \(tool) auto-allowed (Always)")
+            Task.detached { [weak self] in
+                self?.sendLine(fd: fd, text: #"{"permissionDecision":"allow"}"#)
+                close(fd)
+            }
+            return
         }
         nbLog("PermissionRequest \(tool): \(command)")
 
-        if pendingApprovalFD >= 0 {
-            let old = pendingApprovalFD
-            Task.detached { [weak self] in
-                self?.sendLine(fd: old, text: #"{"permissionDecision":"deny"}"#)
-                close(old)
-            }
-        }
-        pendingApprovalFD = fd
-        activeSessionId = sessionId
+        let token = UUID()
+        approvalQueue.append(PendingApproval(
+            token: token, fd: fd, isCopilot: fromCopilot, alwaysKey: alwaysKey,
+            info: ApprovalInfo(sessionId: sessionId, tool: tool, command: command, isCopilot: fromCopilot),
+            projectName: projectName, cwd: cwd, payload: payload))
+        watchForHangup(fd: fd, token: token)
 
-        upsertTask(projectName: projectName, cwd: cwd)
+        // Unanswered: Copilot falls back to its own confirmation, Claude Code gets a deny
+        DispatchQueue.main.asyncAfter(deadline: .now() + 115) { [weak self] in
+            self?.answerApproval(token: token, decision: fromCopilot ? "ask" : "deny")
+        }
+
+        if approvalQueue.count == 1 {
+            presentCurrentApproval()
+        } else {
+            // Parallel tool calls: keep the one on screen, queue this one behind it
+            AppState.shared.pendingApproval?.moreWaiting = approvalQueue.count - 1
+        }
+    }
+
+    /// Shows the first queued approval, or restores the normal view when none are left.
+    @MainActor
+    private func presentCurrentApproval() {
+        guard let current = approvalQueue.first else {
+            finishApprovalUI()
+            return
+        }
+        let state = AppState.shared
+        activeSessionId = current.info.sessionId
+        upsertTask(projectName: current.projectName, cwd: current.cwd, payload: current.payload)
         state.updateTask(id: "integration_claude", state: .approval)
-        state.pendingApproval = ApprovalInfo(sessionId: sessionId, tool: tool, command: command)
+        var info = current.info
+        info.moreWaiting = approvalQueue.count - 1
+        state.pendingApproval = info
         state.isPinned = true
         SoundEngine.shared.play("approval")
 
-        let focused = state.focusId == "integration_claude"
-        if focused {
+        if state.focusId == "integration_claude" {
             expandIfNeeded(to: .approval)
         } else {
             setPillBadge(id: "integration_claude", badge: .approval)
         }
+    }
 
-        let captured = fd
-        DispatchQueue.main.asyncAfter(deadline: .now() + 115) { [weak self] in
-            guard let self, self.pendingApprovalFD == captured else { return }
-            self.sendApprovalDecision("deny")
+    // MARK: - VS Code Local harness: PreToolUse doubles as the approval hook
+
+    /// Tools that VS Code would normally confirm: terminal commands, tasks, web fetches and MCP tools.
+    static func vsCodeToolNeedsApproval(_ tool: String) -> Bool {
+        let lower = tool.lowercased()
+        if lower.hasPrefix("mcp_") || lower.hasPrefix("mcp.") { return true }
+        let t = lower.replacingOccurrences(of: "_", with: "")
+        return t.contains("runinterminal") || t.hasSuffix("runtask") || t.contains("createandruntask")
+            || t.contains("fetchwebpage") || t == "fetch"
+    }
+
+    @MainActor
+    private func processVSCodePreToolUse(fd: Int32, payload: [String: Any]) {
+        processEvent(name: "PreToolUse", payload: payload)
+
+        let tool = payload["tool_name"] as? String ?? ""
+        guard Self.vsCodeToolNeedsApproval(tool) else {
+            Task.detached { [weak self] in
+                self?.sendLine(fd: fd, text: #"{"ok":true}"#)
+                close(fd)
+            }
+            return
+        }
+        processPermissionRequest(fd: fd, payload: payload)
+    }
+
+    /// Clears the notch when the waiting hook goes away (agent cancelled or hook timed out).
+    private func watchForHangup(fd: Int32, token: UUID) {
+        let watchFD = dup(fd)
+        guard watchFD >= 0 else { return }
+        Thread.detachNewThread { [weak self] in
+            var pfd = pollfd(fd: watchFD, events: Int16(POLLIN), revents: 0)
+            while poll(&pfd, 1, -1) < 0 && errno == EINTR {}
+            var byte: UInt8 = 0
+            let n = recv(watchFD, &byte, 1, MSG_PEEK)
+            close(watchFD)
+            guard n <= 0 else { return }
+            Task { @MainActor in self?.approvalHookGone(token: token) }
         }
     }
 
-    /// Called by ApprovalView buttons. Writes the decision to the waiting nb-hook and cleans up.
+    @MainActor
+    private func approvalHookGone(token: UUID) {
+        guard let idx = approvalQueue.firstIndex(where: { $0.token == token }) else { return }
+        nbLog("Approval request withdrawn")
+        let entry = approvalQueue.remove(at: idx)
+        close(entry.fd)
+        if idx == 0 { presentCurrentApproval() }
+        else { AppState.shared.pendingApproval?.moreWaiting = approvalQueue.count - 1 }
+    }
+
+    /// Called by ApprovalView buttons for the approval on screen.
+    /// "ask" hands the decision back to the agent's own prompt (Copilot only).
     @MainActor
     func sendApprovalDecision(_ decision: String) {
-        let fd = pendingApprovalFD
-        pendingApprovalFD = -1
+        guard let current = approvalQueue.first else {
+            finishApprovalUI()
+            return
+        }
+        answerApproval(token: current.token, decision: decision)
+    }
+
+    /// Dismisses a VS Code-only permission notice (nothing is waiting on the socket).
+    @MainActor
+    func dismissApprovalNotice() {
+        guard AppState.shared.pendingApproval?.answerInVSCode == true, approvalQueue.isEmpty else { return }
+        finishApprovalUI()
+    }
+
+    /// Writes the decision to the waiting nb-hook, then moves on to the next queued approval.
+    @MainActor
+    private func answerApproval(token: UUID, decision: String) {
+        guard let idx = approvalQueue.firstIndex(where: { $0.token == token }) else { return }
+        let headBefore = approvalQueue.first?.token
+        let entry = approvalQueue.remove(at: idx)
 
         let json: String
         switch decision {
         case "allow":  json = #"{"permissionDecision":"allow"}"#
         case "always": json = #"{"permissionDecision":"allow","alwaysAllow":true}"#
+        case "ask" where entry.isCopilot: json = #"{"permissionDecision":"ask"}"#
         default:       json = #"{"permissionDecision":"deny"}"#
         }
+        reply(fd: entry.fd, text: json)
 
-        if fd >= 0 {
-            Task.detached { [weak self] in
-                self?.sendLine(fd: fd, text: json)
-                close(fd)
+        if decision == "always" {
+            if entry.isCopilot {
+                copilotAlwaysAllowedTools.insert(entry.alwaysKey)
+                // Same tool in the same session is already waiting behind: allow it too
+                for other in approvalQueue where other.alwaysKey == entry.alwaysKey {
+                    reply(fd: other.fd, text: #"{"permissionDecision":"allow"}"#)
+                }
+                approvalQueue.removeAll { $0.alwaysKey == entry.alwaysKey }
+            } else {
+                AppState.shared.alwaysAllow = true
             }
         }
 
+        if approvalQueue.first?.token != headBefore { presentCurrentApproval() }
+        else { AppState.shared.pendingApproval?.moreWaiting = approvalQueue.count - 1 }
+    }
+
+    /// Sends one JSON line to a waiting nb-hook and ends the connection.
+    private func reply(fd: Int32, text: String) {
+        Task.detached { [weak self] in
+            self?.sendLine(fd: fd, text: text)
+            // Shutdown (not just close) so the hangup watcher's dup'ed fd doesn't keep the socket open
+            shutdown(fd, SHUT_RDWR)
+            close(fd)
+        }
+    }
+
+    @MainActor
+    private func finishApprovalUI() {
         let state = AppState.shared
-        if decision == "always" { state.alwaysAllow = true }
         state.pendingApproval = nil
         state.isPinned = false
         state.updateTask(id: "integration_claude", state: .working)
         clearPillBadge(id: "integration_claude")
-        state.view = state.tasks.isEmpty ? .empty : .overview
+        if state.view == .approval { state.view = state.tasks.isEmpty ? .empty : .overview }
     }
 
-    /// Updates integration_claude with the current session project name and cwd.
+    private func approvalSummary(tool: String, input: [String: Any]) -> String {
+        if let cmd = input["command"] as? String, !cmd.isEmpty { return cmd }
+        if let urls = input["urls"] as? [String], !urls.isEmpty { return urls.joined(separator: "\n") }
+        if let url = input["url"] as? String, !url.isEmpty { return url }
+        if let task = input["task_label"] as? String ?? input["label"] as? String ?? input["id"] as? String {
+            return "\(tool) · \(task)"
+        }
+        return tool
+    }
+
+    /// Updates integration_claude with the current session project name, cwd and agent.
     @MainActor
-    private func upsertTask(projectName: String, cwd: String = "") {
+    private func upsertTask(projectName: String, cwd: String = "", payload: [String: Any]) {
         let state = AppState.shared
         guard let idx = state.tasks.firstIndex(where: { $0.id == "integration_claude" }) else { return }
         state.tasks[idx].name = projectName
         if !cwd.isEmpty { state.tasks[idx].sessionCwd = cwd }
+        switch payload["agent"] as? String {
+        case "copilot":
+            // Copilot running inside VS Code (either harness) vs Copilot CLI in a terminal
+            let host = ((payload["bundle_id"] as? String ?? "") + (payload["term_program"] as? String ?? "")).lowercased()
+            let inVSCode = payload["harness"] as? String == "vscode" || host.contains("vscode")
+            state.tasks[idx].agentLabel = inVSCode ? "Copilot" : "Copilot CLI"
+        case "claude":
+            state.tasks[idx].agentLabel = "Claude Code"
+        default:
+            break
+        }
+    }
+
+    /// Human-readable text of an ErrorOccurred payload (the message may itself be a JSON error body).
+    private func errorSummary(_ payload: [String: Any]) -> String {
+        var message = (payload["error"] as? [String: Any])?["message"] as? String
+            ?? payload["error"] as? String ?? "error"
+        if let data = message.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let inner = json["message"] as? String {
+            message = inner
+        }
+        return message
     }
 
     // MARK: - Badge helpers
@@ -365,6 +545,7 @@ final class HookServer: @unchecked Sendable {
         state.tasks[idx].stepIndex = 0
         state.tasks[idx].name = "VS Code"
         state.tasks[idx].pillBadge = nil
+        state.tasks[idx].agentLabel = nil
     }
 
     @MainActor
@@ -404,17 +585,44 @@ final class HookServer: @unchecked Sendable {
             "LS":         "Liste",
             "MultiEdit":  "Modifie",
             "NotebookEdit": "Notebook",
+            // VS Code Local harness
+            "run_in_terminal":              "Exécute",
+            "read_file":                    "Lit",
+            "create_file":                  "Écrit",
+            "replace_string_in_file":       "Modifie",
+            "multi_replace_string_in_file": "Modifie",
+            "insert_edit_into_file":        "Modifie",
+            "apply_patch":                  "Modifie",
+            "edit_notebook_file":           "Notebook",
+            "file_search":                  "Cherche",
+            "grep_search":                  "Recherche",
+            "semantic_search":              "Recherche",
+            "list_dir":                     "Liste",
+            "fetch_webpage":                "Récupère",
+            "manage_todo_list":             "Tâches",
+            "runSubagent":                  "Agent",
+            // Copilot SDK runtime names (Agent Host / CLI tools without a Claude equivalent)
+            "Agent":                        "Agent",
+            "AskUserQuestion":              "Question",
+            "bash":                         "Exécute",
+            "view":                         "Lit",
+            "create":                       "Écrit",
+            "edit":                         "Modifie",
+            "web_fetch":                    "Récupère",
+            "ask_user":                     "Question",
         ]
         let label = labels[tool] ?? tool
         if let cmd = input["command"] as? String {
             let short = String(cmd.prefix(40))
             return "\(label) · \(short)"
-        } else if let path = input["path"] as? String {
+        } else if let path = (input["path"] ?? input["filePath"] ?? input["dirPath"]) as? String {
             return "\(label) · \(URL(fileURLWithPath: path).lastPathComponent)"
         } else if let file = input["file_path"] as? String {
             return "\(label) · \(URL(fileURLWithPath: file).lastPathComponent)"
         } else if let query = input["query"] as? String {
             return "\(label) · \(String(query.prefix(40)))"
+        } else if let url = (input["urls"] as? [String])?.first ?? input["url"] as? String {
+            return "\(label) · \(String(url.prefix(40)))"
         }
         return label
     }
@@ -442,12 +650,16 @@ final class HookServer: @unchecked Sendable {
     }
 
     private func sendLine(fd: Int32, text: String) {
-        var bytes = Array((text + "\n").utf8)
-        var sent = 0
-        while sent < bytes.count {
-            let n = Darwin.send(fd, &bytes[sent], bytes.count - sent, 0)
-            if n <= 0 { break }
-            sent += n
+        // `&bytes[i]` would point at a temporary one-byte copy, so send from the buffer itself
+        let bytes = Array((text + "\n").utf8)
+        bytes.withUnsafeBytes { buf in
+            guard let base = buf.baseAddress else { return }
+            var sent = 0
+            while sent < buf.count {
+                let n = Darwin.send(fd, base + sent, buf.count - sent, 0)
+                if n <= 0 { break }
+                sent += n
+            }
         }
     }
 
@@ -609,9 +821,13 @@ final class HookServer: @unchecked Sendable {
         return try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
     }
 
-    // MARK: - VS Code Copilot hook installer (Local harness, no Copilot CLI needed)
-    // VS Code reads native-format *.json from ~/.copilot/hooks/. It has no SessionEnd,
-    // PermissionRequest or Notification events, so approvals stay in VS Code.
+    // MARK: - VS Code Copilot hook installer (no Copilot CLI needed)
+    // Both VS Code harnesses read ~/.copilot/hooks/*.json:
+    // - Agent Host (Copilot SDK) fires the same events as Copilot CLI, approvals use PermissionRequest.
+    // - Local harness has no SessionEnd, PermissionRequest or Notification (unknown keys are skipped),
+    //   so approvals ride on PreToolUse: the hook waits for a notch decision and answers with
+    //   hookSpecificOutput.permissionDecision.
+    // nb-hook tells them apart with the COPILOT_CLI env var set by the SDK.
 
     static var copilotVSCodeHooksURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -624,11 +840,21 @@ final class HookServer: @unchecked Sendable {
 
     func writeCopilotVSCodeHooks() throws {
         let hookPath = Self.hookScriptPath.replacingOccurrences(of: "\"", with: "\\\"")
-        let command = "\"\(hookPath)\" --copilot"
+        let command = "\"\(hookPath)\" --copilot --vscode"
+        // PreToolUse (Local) and PermissionRequest (Agent Host) may wait on the user in the notch;
+        // the app hands back to VS Code at 115s
+        let events: [(String, Int)] = [
+            ("SessionStart", 10), ("SessionEnd", 10),
+            ("UserPromptSubmit", 10),
+            ("PreToolUse", 120), ("PostToolUse", 10), ("PostToolUseFailure", 10),
+            ("PermissionRequest", 120),
+            ("Notification", 10),
+            ("Stop", 10), ("SubagentStart", 10), ("SubagentStop", 10),
+            ("ErrorOccurred", 10),
+        ]
         var hooks: [String: Any] = [:]
-        for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-                      "Stop", "SubagentStart", "SubagentStop"] {
-            hooks[event] = [["type": "command", "command": command, "timeout": 10]]
+        for (event, timeout) in events {
+            hooks[event] = [["type": "command", "command": command, "timeout": timeout]]
         }
         let data = try JSONSerialization.data(withJSONObject: ["hooks": hooks],
                                               options: [.prettyPrinted, .sortedKeys])
@@ -734,6 +960,18 @@ final class HookServer: @unchecked Sendable {
     #endif
 }
 
+/// A permission request whose nb-hook is waiting on the socket for the user's decision.
+private struct PendingApproval {
+    let token: UUID
+    let fd: Int32
+    let isCopilot: Bool
+    let alwaysKey: String   // "<session>|<tool>" for Copilot's per-session "Always"
+    let info: ApprovalInfo
+    let projectName: String
+    let cwd: String
+    let payload: [String: Any]
+}
+
 // MARK: - Notification names for hook server → controller communication
 
 extension Notification.Name {
@@ -746,7 +984,53 @@ private let nbHookScript = """
 #!/usr/bin/env python3
 # nb-hook — Notch Buddy hook relay for Claude Code
 # Reads JSON from stdin, forwards to NotchBuddy via Unix socket, relays response.
-import sys, json, os, socket
+import sys, json, os, socket, re
+
+COPILOT_EVENT_NAMES = {
+    'permissionRequest': 'PermissionRequest',
+    'agentStop': 'Stop',
+    'userPromptSubmitted': 'UserPromptSubmit',
+    'errorOccurred': 'ErrorOccurred',
+}
+
+def normalize_copilot(payload):
+    # The Copilot SDK sends some events (permissionRequest, subagentStart) in camelCase
+    name = payload.get('hookName') or ''
+    out = {re.sub(r'(?<!^)(?=[A-Z])', '_', k).lower(): v for k, v in payload.items()}
+    out['hook_event_name'] = COPILOT_EVENT_NAMES.get(name, name[:1].upper() + name[1:])
+    if 'tool_input' not in out and 'tool_args' in out:
+        out['tool_input'] = out['tool_args']
+    if isinstance(out.get('tool_input'), str):
+        try:
+            out['tool_input'] = json.loads(out['tool_input'])
+        except Exception:
+            pass
+    return out
+
+def last_assistant_line(path):
+    # Best effort: VS Code and the Copilot SDK write JSONL transcripts with assistant.message events
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 512 * 1024))
+            lines = f.read().decode('utf-8', 'ignore').splitlines()
+        for line in reversed(lines):
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if event.get('type') != 'assistant.message':
+                continue
+            content = (event.get('data') or {}).get('content')
+            if not isinstance(content, str):
+                continue
+            for text in content.splitlines():
+                text = text.strip().lstrip('#>*-• ').replace('**', '').replace('`', '').strip()
+                if text:
+                    return text[:120]
+    except Exception:
+        pass
+    return None
 
 def main():
     if os.environ.get('NB_HOOK_DISABLE'):
@@ -761,7 +1045,29 @@ def main():
 
     # Enrich with terminal context
     env = os.environ
-    agent = 'copilot' if '--copilot' in sys.argv[1:] else 'claude'
+    args = sys.argv[1:]
+    agent = 'copilot' if '--copilot' in args else 'claude'
+    if agent == 'copilot':
+        if 'hook_event_name' not in payload and payload.get('hookName'):
+            payload = normalize_copilot(payload)
+        # The Copilot SDK (CLI, VS Code Agent Host) and VS Code's Local harness both load
+        # every ~/.copilot/hooks/*.json: answer from one Coucou file per harness so events
+        # aren't reported twice when both the CLI and VS Code hooks are installed.
+        sdk_harness = bool(env.get('COPILOT_CLI'))
+        vscode_entry = '--vscode' in args
+        copilot_home = env.get('COPILOT_HOME') or os.path.expanduser('~/.copilot')
+        cli_file = os.path.exists(os.path.join(copilot_home, 'hooks', 'coucou.json'))
+        vscode_file = os.path.exists(os.path.expanduser('~/.copilot/hooks/coucou-vscode.json'))
+        if sdk_harness and vscode_entry and cli_file:
+            return
+        if not sdk_harness and not vscode_entry and vscode_file:
+            return
+        if vscode_entry and not sdk_harness:
+            payload['harness'] = 'vscode'
+        if payload.get('hook_event_name') == 'Stop' and not payload.get('message'):
+            summary = last_assistant_line(payload.get('transcript_path') or '')
+            if summary:
+                payload['message'] = summary
     payload['agent'] = agent
     payload.setdefault('term_program', env.get('TERM_PROGRAM', ''))
     payload.setdefault('iterm_session_id', env.get('ITERM_SESSION_ID', ''))
@@ -774,6 +1080,44 @@ def main():
     socket_path = os.path.expanduser(
         '~/Library/Application Support/NotchBuddy/nb.sock'
     )
+
+    if event == 'PreToolUse' and payload.get('harness') == 'vscode':
+        # VS Code has no PermissionRequest: wait for the notch on PreToolUse.
+        # The app answers right away unless the tool needs an approval.
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            s.connect(socket_path)
+            s.sendall((json.dumps(payload) + '\\n').encode())
+            s.settimeout(118)
+            chunks = []
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if b'\\n' in chunk:
+                    break
+            s.close()
+            response = b''.join(chunks).decode().strip()
+            decision = json.loads(response).get('permissionDecision') if response else None
+            if decision in ('allow', 'deny', 'ask'):
+                reasons = {
+                    'allow': 'Approved from Coucou',
+                    'deny': 'Denied from Coucou',
+                    'ask': 'No answer in Coucou',
+                }
+                out = {'hookSpecificOutput': {
+                    'hookEventName': 'PreToolUse',
+                    'permissionDecision': decision,
+                    'permissionDecisionReason': reasons[decision],
+                }}
+                sys.stdout.write(json.dumps(out) + '\\n')
+                sys.stdout.flush()
+        except Exception:
+            pass
+        # No output = VS Code keeps its normal confirmation flow
+        sys.exit(0)
 
     if event == 'PermissionRequest':
         # Block and wait for NotchBuddy's decision (Claude Code allows up to 120s)

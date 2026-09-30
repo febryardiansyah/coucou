@@ -59,7 +59,7 @@ struct OverviewView: View {
                                     .lineLimit(1)
                                     .truncationMode(.tail)
                                     .layoutPriority(1)
-                                Text(agent.source == .claudeCode ? "Claude Code" : "n8n")
+                                Text(agent.source == .claudeCode ? (agent.agentLabel ?? "Claude Code") : "n8n")
                                     .font(.system(size: 11))
                                     .foregroundColor(Color(hex: "#8E939C"))
                                     .lineLimit(1)
@@ -198,18 +198,32 @@ struct ApprovalView: View {
         ZStack {
             CardBackground(wash: .amber)
             VStack(alignment: .leading, spacing: 5) {
-                AgentWho(task: state.focusTask, label: "needs permission")
+                AgentWho(task: state.focusTask,
+                         label: approval.map {
+                            $0.answerInVSCode ? "needs permission in VS Code"
+                            : $0.moreWaiting > 0 ? "needs permission · \($0.moreWaiting) more waiting"
+                            : "needs permission" }
+                            ?? "needs permission")
                 CodeBlock(text: approval?.command ?? approval?.tool ?? "…")
                 HStack(spacing: 8) {
-                    SecondaryButton("Deny") {
-                        HookServer.shared.sendApprovalDecision("deny")
-                    }
-                    PrimaryButton("Allow") {
-                        HookServer.shared.sendApprovalDecision("allow")
-                    }
-                    if !state.alwaysAllow {
-                        SecondaryButton("Always") {
-                            HookServer.shared.sendApprovalDecision("always")
+                    if approval?.answerInVSCode == true {
+                        SecondaryButton("Dismiss") {
+                            HookServer.shared.dismissApprovalNotice()
+                        }
+                        PrimaryButton("Answer in VS Code") {
+                            openInVSCode(cwd: state.focusTask?.sessionCwd)
+                        }
+                    } else {
+                        SecondaryButton("Deny") {
+                            HookServer.shared.sendApprovalDecision("deny")
+                        }
+                        PrimaryButton("Allow") {
+                            HookServer.shared.sendApprovalDecision("allow")
+                        }
+                        if approval?.isCopilot == true || !state.alwaysAllow {
+                            SecondaryButton("Always") {
+                                HookServer.shared.sendApprovalDecision("always")
+                            }
                         }
                     }
                 }
@@ -285,20 +299,27 @@ struct FinishedView: View {
         ZStack {
             CardBackground(wash: .green)
             VStack(alignment: .leading, spacing: 5) {
-                AgentWho(task: state.focusTask, label: "Claude Code finished")
+                AgentWho(task: state.focusTask, label: "\(state.focusTask?.agentLabel ?? "Claude Code") finished")
                 Text(state.focusTask?.steps.last ?? "Session finished")
                     .font(.system(size: 15, weight: .semibold))
                 HStack(spacing: 8) {
                     #if !APPSTORE
-                    PrimaryButton("Open terminal") {
-                        let terminalBundleIds = ["com.apple.Terminal", "com.googlecode.iterm2", "net.kovidgoyal.kitty", "com.mitchellh.ghostty"]
-                        let activated = terminalBundleIds.compactMap { id in
-                            NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }
-                        }.first.map { $0.activate(options: .activateIgnoringOtherApps) }
-                        if activated == nil {
-                            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"))
+                    if state.focusTask?.agentLabel == "Copilot" {
+                        PrimaryButton("Open VS Code") {
+                            openInVSCode(cwd: state.focusTask?.sessionCwd)
+                            NotificationCenter.default.post(name: .islandCollapse, object: nil)
                         }
-                        NotificationCenter.default.post(name: .islandCollapse, object: nil)
+                    } else {
+                        PrimaryButton("Open terminal") {
+                            let terminalBundleIds = ["com.apple.Terminal", "com.googlecode.iterm2", "net.kovidgoyal.kitty", "com.mitchellh.ghostty"]
+                            let activated = terminalBundleIds.compactMap { id in
+                                NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }
+                            }.first.map { $0.activate(options: .activateIgnoringOtherApps) }
+                            if activated == nil {
+                                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"))
+                            }
+                            NotificationCenter.default.post(name: .islandCollapse, object: nil)
+                        }
                     }
                     #endif
                     SecondaryButton("OK") {
@@ -960,6 +981,7 @@ struct IntegrationCardView: View {
     private var isConfigured: Bool {
         switch task.id {
         case "integration_claude":
+            if HookServer.copilotVSCodeHooksInstalled || HookServer.copilotHooksInstalled { return true }
             let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
             guard let data = try? Data(contentsOf: url),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1079,7 +1101,7 @@ struct IntegrationCardView: View {
                         .foregroundColor(Color(hex: "#F5F6F8"))
                         .lineLimit(1).truncationMode(.tail)
                         .layoutPriority(1)
-                    Text("Claude Code")
+                    Text(task.agentLabel ?? "Claude Code")
                         .font(.system(size: 11))
                         .foregroundColor(Color(hex: "#8E939C"))
                         .lineLimit(1).truncationMode(.tail)
@@ -1140,7 +1162,7 @@ struct IntegrationCardView: View {
 
                 HStack(spacing: 8) {
                     if task.id == "integration_claude" {
-                        Button("Open Visual Studio Code") { openVSCode() }
+                        Button("Open Visual Studio Code") { openInVSCode(cwd: task.sessionCwd) }
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(Color(hex: task.color).opacity(0.7))
                             .buttonStyle(.plain)
@@ -1205,31 +1227,33 @@ struct IntegrationCardView: View {
         }
     }
 
-    private func openVSCode() {
-        let ids = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.vscodium.codium"]
-        let appURL = ids.compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }.first
+}
 
-        // If we have a project folder, open it directly in VS Code
-        if let cwd = task.sessionCwd, !cwd.isEmpty, let appURL = appURL {
-            NSWorkspace.shared.open(
-                [URL(fileURLWithPath: cwd)],
-                withApplicationAt: appURL,
-                configuration: .init(),
-                completionHandler: nil
-            )
-            return
-        }
+/// Opens the session folder in VS Code, or just brings VS Code forward when there is none.
+@MainActor
+func openInVSCode(cwd: String?) {
+    let ids = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.vscodium.codium"]
+    let appURL = ids.compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }.first
 
-        // No cwd: activate running instance or launch fresh
-        if let running = ids.compactMap({ id in
-            NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }
-        }).first {
-            running.activate(options: .activateIgnoringOtherApps)
-            return
-        }
-        if let appURL = appURL {
-            NSWorkspace.shared.openApplication(at: appURL, configuration: .init(), completionHandler: nil)
-        }
+    if let cwd, !cwd.isEmpty, let appURL {
+        NSWorkspace.shared.open(
+            [URL(fileURLWithPath: cwd)],
+            withApplicationAt: appURL,
+            configuration: .init(),
+            completionHandler: nil
+        )
+        return
+    }
+
+    // No cwd: activate running instance or launch fresh
+    if let running = ids.compactMap({ id in
+        NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }
+    }).first {
+        running.activate(options: .activateIgnoringOtherApps)
+        return
+    }
+    if let appURL {
+        NSWorkspace.shared.openApplication(at: appURL, configuration: .init(), completionHandler: nil)
     }
 }
 

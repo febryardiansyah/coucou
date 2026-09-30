@@ -19,15 +19,20 @@ enum ChatProvider: String, CaseIterable, Identifiable {
 
     var isConfigured: Bool {
         switch self {
-        case .anthropic:
-            return KeychainStore.shared.get("anthropic-api-key") != nil
-        case .openAICompatible:
-            return !(UserDefaults.standard.string(forKey: "openaiBaseURL") ?? "").isEmpty
-                && !(UserDefaults.standard.string(forKey: "openaiModel") ?? "").isEmpty
-        case .hermes:
-            return !(UserDefaults.standard.string(forKey: "hermesURL") ?? "").isEmpty
+        case .anthropic:        return KeychainStore.shared.get("anthropic-api-key") != nil
+        case .openAICompatible: return !setting("openaiBaseURL").isEmpty && !setting("openaiModel").isEmpty
+        case .hermes:           return !setting("hermesURL").isEmpty
         }
     }
+}
+
+private func setting(_ key: String) -> String {
+    UserDefaults.standard.string(forKey: key) ?? ""
+}
+
+/// URL settings tolerate stray spaces and trailing slashes.
+private func urlSetting(_ key: String) -> String {
+    setting(key).trimmingCharacters(in: CharacterSet(charactersIn: " /"))
 }
 
 // MARK: - Non-Anthropic backends
@@ -67,12 +72,36 @@ extension ClaudeService {
         NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.happy)
     }
 
+    /// POSTs a JSON body and returns the decoded JSON object (`[:]` if the body isn't a JSON object).
+    /// Shows an error and returns nil on network or HTTP failure.
+    private func postJSON(_ url: URL, body: [String: Any], headers: [String: String], timeout: TimeInterval,
+                          errorPrefix: String, state: AppState) async -> [String: Any]? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.timeoutInterval = timeout
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                let msg = String(data: data, encoding: .utf8) ?? "unknown error"
+                showError("\(errorPrefix): \(String(msg.prefix(200)))", state: state)
+                return nil
+            }
+            return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        } catch {
+            showError("Network error: \(error.localizedDescription)", state: state)
+            return nil
+        }
+    }
+
     // MARK: OpenAI-compatible (OpenRouter, Azure AI Foundry, Ollama, LM Studio, …)
 
     func chatOpenAICompatible(context: PromptContext?, state: AppState) async {
-        let ud = UserDefaults.standard
-        let base = (ud.string(forKey: "openaiBaseURL") ?? "").trimmingCharacters(in: CharacterSet(charactersIn: " /"))
-        let model = ud.string(forKey: "openaiModel") ?? ""
+        let base = urlSetting("openaiBaseURL")
+        let model = setting("openaiModel")
         guard !base.isEmpty, !model.isEmpty, let url = URL(string: base + "/chat/completions") else {
             showError("Set the endpoint URL and model in Settings.", state: state)
             return
@@ -81,33 +110,20 @@ extension ClaudeService {
         var messages: [[String: String]] = [["role": "system", "content": systemPrompt]]
         messages += transcript(context: context, state: state).map { ["role": $0.role, "content": $0.content] }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        var headers: [String: String] = [:]
         if let key = KeychainStore.shared.get("openai-api-key"), !key.isEmpty {
-            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            headers["Authorization"] = "Bearer \(key)"
         }
-        request.timeoutInterval = 90
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model, "messages": messages])
 
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                let msg = String(data: data, encoding: .utf8) ?? "unknown error"
-                showError("API error: \(String(msg.prefix(200)))", state: state)
-                return
-            }
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let choices = json["choices"] as? [[String: Any]],
-                  let message = choices.first?["message"] as? [String: Any],
-                  let text = message["content"] as? String else {
-                showError("Unexpected API response.", state: state)
-                return
-            }
-            finishChat(text, state: state)
-        } catch {
-            showError("Network error: \(error.localizedDescription)", state: state)
+        guard let json = await postJSON(url, body: ["model": model, "messages": messages], headers: headers,
+                                        timeout: 90, errorPrefix: "API error", state: state) else { return }
+        guard let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let text = message["content"] as? String else {
+            showError("Unexpected API response.", state: state)
+            return
         }
+        finishChat(text, state: state)
     }
 
     // MARK: Hermes (agent running on your VPS)
@@ -116,46 +132,30 @@ extension ClaudeService {
     /// The bridge runs a real agent session on the VPS, so it keeps its own thread:
     /// only the newest user turn is sent, and the reply is appended to the notch chat.
     func chatHermes(context: PromptContext?, state: AppState) async {
-        let raw = (UserDefaults.standard.string(forKey: "hermesURL") ?? "")
-            .trimmingCharacters(in: CharacterSet(charactersIn: " /"))
+        let raw = urlSetting("hermesURL")
         guard !raw.isEmpty, let url = URL(string: raw) else {
             showError("Set the Hermes bridge URL in Settings.", state: state)
             return
         }
-        let sessionRaw = UserDefaults.standard.string(forKey: "hermesSession") ?? ""
-        let session = sessionRaw.isEmpty ? "coucou" : sessionRaw
-
         guard let query = state.chatHistory.last(where: { $0.role == .user })?.content,
               !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             showError("Nothing to send.", state: state)
             return
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        let session = setting("hermesSession").isEmpty ? "coucou" : setting("hermesSession")
+        var headers: [String: String] = [:]
         if let key = KeychainStore.shared.get("hermes-key"), !key.isEmpty {
-            request.setValue(key, forHTTPHeaderField: "X-Hermes-Key")
+            headers["X-Hermes-Key"] = key
         }
-        request.timeoutInterval = 200
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["text": query, "session": session])
 
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                let msg = String(data: data, encoding: .utf8) ?? "unknown error"
-                showError("Hermes bridge: \(String(msg.prefix(200)))", state: state)
-                return
-            }
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let text = json["reply"] as? String,
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                showError("Empty reply from the Hermes bridge.", state: state)
-                return
-            }
-            finishChat(text, state: state)
-        } catch {
-            showError("Network error: \(error.localizedDescription)", state: state)
+        guard let json = await postJSON(url, body: ["text": query, "session": session], headers: headers,
+                                        timeout: 200, errorPrefix: "Hermes bridge", state: state) else { return }
+        guard let text = json["reply"] as? String,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            showError("Empty reply from the Hermes bridge.", state: state)
+            return
         }
+        finishChat(text, state: state)
     }
 }

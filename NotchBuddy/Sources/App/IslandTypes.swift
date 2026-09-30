@@ -34,6 +34,9 @@ struct ApprovalInfo: Sendable {
     var sessionId: String
     var tool: String
     var command: String
+    var isCopilot: Bool = false   // Copilot: "Always" is per tool and session, timeout hands back to Copilot's own prompt
+    var moreWaiting: Int = 0      // other approvals queued behind this one
+    var answerInVSCode: Bool = false  // notice only: the agent is prompting in VS Code, the notch can't answer
 }
 
 // MARK: - Pill badge (shown on pill edge when non-focused task has an alert)
@@ -55,6 +58,7 @@ struct AgentTask: Identifiable, Equatable {
     var miniEye: EyeShape? = nil
     var pillBadge: PillBadge? = nil  // alert badge shown on pill when not focused
     var sessionCwd: String?  = nil  // last known working directory (Claude Code sessions)
+    var agentLabel: String?  = nil  // "Claude Code", "Copilot" (VS Code) or "Copilot CLI" for the current hook session
 }
 
 enum AgentSource: Equatable {
