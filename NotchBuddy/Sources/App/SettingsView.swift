@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var launchAtStartup: Bool = (SMAppService.mainApp.status == .enabled)
     @State private var statusMessage: String = ""
     @State private var copilotStatus: String = HookServer.copilotHooksInstalled ? "✓ Installed" : ""
+    @State private var copilotVSCodeStatus: String = HookServer.copilotVSCodeHooksInstalled ? "✓ Installed" : ""
     @State private var showDiff: Bool = false
     @State private var pendingHookJSON: String = ""
     #if APPSTORE
@@ -191,6 +192,28 @@ struct SettingsView: View {
                             Text(copilotStatus)
                                 .font(.system(size: 11))
                                 .foregroundColor(copilotStatus.hasPrefix("❌") ? .red : .secondary)
+                        }
+                    }
+                    .padding(6)
+                }
+
+                GroupBox("GitHub Copilot in VS Code (no CLI needed)") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(HookServer.copilotVSCodeHooksURL.path)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        Text("Shows Copilot agent sessions from VS Code. Approvals stay in VS Code. Install this or the CLI hooks, not both.")
+                            .font(.system(size: 11)).foregroundColor(.secondary)
+                        HStack(spacing: 10) {
+                            Button("Install VS Code hooks") { installCopilotVSCodeHooks() }
+                                .buttonStyle(.borderedProminent)
+                            Button("Uninstall") { uninstallCopilotVSCodeHooks() }
+                                .buttonStyle(.bordered)
+                        }
+                        if !copilotVSCodeStatus.isEmpty {
+                            Text(copilotVSCodeStatus)
+                                .font(.system(size: 11))
+                                .foregroundColor(copilotVSCodeStatus.hasPrefix("❌") ? .red : .secondary)
                         }
                     }
                     .padding(6)
@@ -549,6 +572,24 @@ struct SettingsView: View {
             copilotStatus = "✓ Copilot hooks removed."
         } catch {
             copilotStatus = "❌ \(error.localizedDescription)"
+        }
+    }
+
+    private func installCopilotVSCodeHooks() {
+        do {
+            try HookServer.shared.writeCopilotVSCodeHooks()
+            copilotVSCodeStatus = "✓ Installed — start a new Copilot agent session in VS Code"
+        } catch {
+            copilotVSCodeStatus = "❌ \(error.localizedDescription)"
+        }
+    }
+
+    private func uninstallCopilotVSCodeHooks() {
+        do {
+            try HookServer.shared.uninstallCopilotVSCodeHooks()
+            copilotVSCodeStatus = "✓ VS Code hooks removed."
+        } catch {
+            copilotVSCodeStatus = "❌ \(error.localizedDescription)"
         }
     }
 

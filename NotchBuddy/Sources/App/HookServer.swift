@@ -145,7 +145,7 @@ final class HookServer: @unchecked Sendable {
             activeSessionId = sessionId
             upsertTask(projectName: projectName, cwd: cwd)
             state.updateTask(id: "integration_claude", state: .thinking)
-            if let message = payload["message"] as? String, !message.isEmpty {
+            if let message = (payload["message"] as? String) ?? (payload["prompt"] as? String), !message.isEmpty {
                 appendStep(id: "integration_claude", step: String(message.prefix(60)))
             }
             if state.isPresent { expandIfNeeded(to: .overview) }
@@ -607,6 +607,39 @@ final class HookServer: @unchecked Sendable {
         }
         let config: [String: Any] = ["version": 1, "hooks": hooks]
         return try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    // MARK: - VS Code Copilot hook installer (Local harness, no Copilot CLI needed)
+    // VS Code reads native-format *.json from ~/.copilot/hooks/. It has no SessionEnd,
+    // PermissionRequest or Notification events, so approvals stay in VS Code.
+
+    static var copilotVSCodeHooksURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".copilot/hooks/coucou-vscode.json")
+    }
+
+    static var copilotVSCodeHooksInstalled: Bool {
+        FileManager.default.fileExists(atPath: copilotVSCodeHooksURL.path)
+    }
+
+    func writeCopilotVSCodeHooks() throws {
+        let hookPath = Self.hookScriptPath.replacingOccurrences(of: "\"", with: "\\\"")
+        let command = "\"\(hookPath)\" --copilot"
+        var hooks: [String: Any] = [:]
+        for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                      "Stop", "SubagentStart", "SubagentStop"] {
+            hooks[event] = [["type": "command", "command": command, "timeout": 10]]
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["hooks": hooks],
+                                              options: [.prettyPrinted, .sortedKeys])
+        let url = Self.copilotVSCodeHooksURL
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+
+    func uninstallCopilotVSCodeHooks() throws {
+        try? FileManager.default.removeItem(at: Self.copilotVSCodeHooksURL)
     }
 
     // MARK: - App Store: hooks via security-scoped bookmark
