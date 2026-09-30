@@ -31,6 +31,8 @@ final class HookServer: @unchecked Sendable {
     /// Approvals waiting on the user, shown one at a time (first = on screen). Main actor only.
     private var approvalQueue: [PendingApproval] = []
     private var copilotAlwaysAllowedTools: Set<String> = []
+    private var editPreviewTimer: DispatchWorkItem?
+    private var editPreviewOpenedIsland = false
     private var activeSessionId: String? = nil  // current Claude Code session
 
     private init() {}
@@ -173,6 +175,7 @@ final class HookServer: @unchecked Sendable {
             let step = frenchStep(tool: tool, input: input)
             appendStep(id: "integration_claude", step: step)
             nbLog("PreToolUse \(step)")
+            showEditPreview(tool: tool, input: input, cwd: cwd, focused: focused)
 
         case "PostToolUse":
             state.updateTask(id: "integration_claude", state: .working)
@@ -251,6 +254,42 @@ final class HookServer: @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    /// Shows the file being edited in the .editing view, then goes back after a short pause.
+    /// Only while VS Code is the focused mochi and nothing more important is on screen.
+    @MainActor
+    private func showEditPreview(tool: String, input: [String: Any], cwd: String, focused: Bool) {
+        guard let preview = EditPreviewBuilder.build(tool: tool, input: input, cwd: cwd) else { return }
+        let state = AppState.shared
+        state.editPreview = preview
+        guard focused, state.isPresent, approvalQueue.isEmpty, state.pendingApproval == nil else { return }
+
+        if state.mode == .expanded {
+            guard [.overview, .empty, .editing, .finished].contains(state.view) else { return }
+            state.view = .editing
+        } else {
+            editPreviewOpenedIsland = true
+            NotificationCenter.default.post(name: .hookExpand, object: IslandView.editing)
+        }
+
+        editPreviewTimer?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.endEditPreview() }
+        }
+        editPreviewTimer = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.5, execute: item)
+    }
+
+    @MainActor
+    private func endEditPreview() {
+        let state = AppState.shared
+        let openedByUs = editPreviewOpenedIsland
+        editPreviewOpenedIsland = false
+        guard state.view == .editing else { return }
+        state.view = state.tasks.isEmpty ? .empty : .overview
+        // We popped the island open just for the preview: fold it back to compact
+        if openedByUs { NotificationCenter.default.post(name: .islandCollapse, object: nil) }
+    }
 
     @MainActor
     private func expandIfNeeded(to view: IslandView) {

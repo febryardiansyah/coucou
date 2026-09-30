@@ -192,6 +192,7 @@ final class AppState: ObservableObject {
 
     // Pending approval request from Claude Code hook
     @Published var pendingApproval: ApprovalInfo? = nil
+    @Published var editPreview: EditPreview? = nil   // last file edit seen in a hook session (.editing view)
 
     // Always-allow mode (set by "Toujours autoriser" button)
     @Published var alwaysAllow: Bool = false
