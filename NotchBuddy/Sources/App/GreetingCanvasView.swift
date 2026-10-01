@@ -284,93 +284,52 @@ private func whiteFill(_ ctx: CGContext, _ path: CGPath,
 private func bodyFill(_ ctx: CGContext, _ path: CGPath, cat: Bool,
                       x0: CGFloat, y0: CGFloat, x1: CGFloat, y1: CGFloat) {
     if cat {
-        gradFill(ctx, path, GCat.furTop, GCat.furBottom, x0: x0, y0: y0, x1: x1, y1: y1)
+        gradFill(ctx, path, CatFur.orange.top.cg(), CatFur.orange.bottom.cg(), x0: x0, y0: y0, x1: x1, y1: y1)
     } else {
         whiteFill(ctx, path, x0: x0, y0: y0, x1: x1, y1: y1)
     }
 }
 
-// MARK: - Cat variant (CoreGraphics port of CatCharacter.swift, same greeting pose)
+// MARK: - Cat variant (CoreGraphics painting over the shared CatShape geometry, same greeting pose)
 
-private enum GCat {
-    static var furTop:    CGColor { gHex("#FFB351") }
-    static var furBottom: CGColor { gHex("#EF731B") }
-    static var stripe:    CGColor { gHex("#BD530E", alpha: 0.85) }
-    static var cream:     CGColor { gHex("#FFF1DC") }
-    static var innerEar:  CGColor { gHex("#FFB4A8") }
-    static var nose:      CGColor { gHex("#E8798A") }
-    static var mouth:     CGColor { gHex("#5A2A19") }
+private func gStroke(_ ctx: CGContext, _ path: Path, color: CGColor, width: CGFloat) {
+    ctx.addPath(path.cgPath)
+    ctx.setStrokeColor(color); ctx.setLineWidth(width); ctx.strokePath()
 }
 
 /// Ears and tail — drawn before the body so the body covers their roots.
 private func drawCatBehindG(_ ctx: CGContext, R: CGFloat, t: Double) {
-    let flick = CGFloat(pow(max(0, sin(t * 0.8)), 24)) * 0.07 * R
+    let fur = CatFur.orange
+    let flick = CatShape.flick(R: R, time: CGFloat(t))
     ctx.saveGState()
     ctx.setLineCap(.round); ctx.setLineJoin(.round)
     for s: CGFloat in [-1, 1] {
-        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: s * x * R, y: y * R) }
-        let tipShift = s > 0 ? flick : 0
-
-        let outer = CGMutablePath()
-        outer.move(to: pt(1.00, -0.42))
-        outer.addLine(to: CGPoint(x: s * 0.84 * R, y: -1.22 * R + tipShift))
-        outer.addLine(to: pt(0.26, -0.84))
-        outer.closeSubpath()
-
-        let inner = CGMutablePath()
-        inner.move(to: pt(0.84, -0.56))
-        inner.addLine(to: CGPoint(x: s * 0.77 * R, y: -1.00 * R + tipShift))
-        inner.addLine(to: pt(0.44, -0.80))
-        inner.closeSubpath()
-
-        ctx.addPath(outer)
-        ctx.setStrokeColor(GCat.furBottom); ctx.setLineWidth(R * 0.14); ctx.strokePath()
-        gradFill(ctx, outer, GCat.furTop, GCat.furBottom, x0: 0, y0: -1.2 * R, x1: 0, y1: -0.4 * R)
-        ctx.addPath(inner)
-        ctx.setStrokeColor(GCat.innerEar); ctx.setLineWidth(R * 0.08); ctx.strokePath()
-        ctx.addPath(inner); ctx.setFillColor(GCat.innerEar); ctx.fillPath()
+        let (outer, inner) = CatShape.ear(side: s, R: R, tipShift: s > 0 ? flick : 0)
+        gStroke(ctx, outer, color: fur.bottom.cg(), width: R * 0.14)
+        gradFill(ctx, outer.cgPath, fur.top.cg(), fur.bottom.cg(), x0: 0, y0: -1.2 * R, x1: 0, y1: -0.4 * R)
+        gStroke(ctx, inner, color: fur.innerEar.cg(), width: R * 0.08)
+        ctx.addPath(inner.cgPath); ctx.setFillColor(fur.innerEar.cg()); ctx.fillPath()
     }
-
-    let wag = CGFloat(sin(t * 2.6)) * 0.14 * R
-    ctx.beginPath()
-    ctx.move(to: CGPoint(x: 0.82 * R, y: 0.50 * R))
-    ctx.addQuadCurve(to: CGPoint(x: 1.34 * R + wag * 0.4, y: -0.06 * R + wag),
-                     control: CGPoint(x: 1.46 * R, y: 0.62 * R))
-    let tail = ctx.path
-    ctx.setStrokeColor(gHex("#BD530E")); ctx.setLineWidth(R * 0.30); ctx.strokePath()
-    if let tail { ctx.addPath(tail) }
-    ctx.setStrokeColor(GCat.furBottom); ctx.setLineWidth(R * 0.22); ctx.strokePath()
+    let tail = CatShape.tail(R: R, wag: CGFloat(sin(t * 2.6)) * 0.14 * R)
+    gStroke(ctx, tail, color: fur.stripe.cg(), width: R * 0.30)
+    gStroke(ctx, tail, color: fur.bottom.cg(), width: R * 0.22)
     ctx.restoreGState()
 }
 
 /// Tabby stripes, edge shading, highlight and muzzle — all clipped to the body.
 private func drawCatFaceG(_ ctx: CGContext, path: CGPath, R: CGFloat, rx: CGFloat, ry: CGFloat,
                           dx: CGFloat, dy: CGFloat) {
+    let fur = CatFur.orange
+    let face = CatFace(dx: dx, dy: dy)
     ctx.saveGState()
     ctx.addPath(path); ctx.clip()
     ctx.setLineCap(.round)
-    ctx.setStrokeColor(GCat.stripe)
 
-    let sdx = dx * 0.6
-    ctx.setLineWidth(R * 0.09)
-    for i in -1...1 {
-        let fi = CGFloat(i)
-        let x = fi * 0.26 * R + sdx
-        ctx.beginPath()
-        ctx.move(to: CGPoint(x: x, y: -ry * 1.02))
-        ctx.addQuadCurve(to: CGPoint(x: x + fi * 0.03 * R, y: -ry * 0.46),
-                         control: CGPoint(x: x + fi * 0.08 * R, y: -ry * 0.74))
-        ctx.strokePath()
+    for p in CatShape.foreheadStripes(R: R, ry: ry, dx: dx * 0.6) {
+        gStroke(ctx, p, color: fur.stripe.cg(alpha: 0.85), width: R * 0.09)
     }
-    ctx.setLineWidth(R * 0.08)
-    for sd: CGFloat in [-1, 1] {
-        for j in 0..<2 {
-            let y = ry * (0.10 + CGFloat(j) * 0.20)
-            ctx.beginPath()
-            ctx.move(to: CGPoint(x: sd * rx * 1.02 + sdx, y: y))
-            ctx.addLine(to: CGPoint(x: sd * rx * 0.80 + sdx, y: y + ry * 0.05))
-            ctx.strokePath()
-        }
+    for p in CatShape.cheekStripes(rx: rx, ry: ry, dx: dx * 0.6) {
+        gStroke(ctx, p, color: fur.stripe.cg(alpha: 0.85), width: R * 0.08)
     }
 
     let cs = CGColorSpaceCreateDeviceRGB()
@@ -389,30 +348,13 @@ private func drawCatFaceG(_ ctx: CGContext, path: CGPath, R: CGFloat, rx: CGFloa
     }
 
     // Muzzle, nose, mouth (follow the eyes' look offset)
-    ctx.setFillColor(GCat.cream)
-    ctx.fillEllipse(in: CGRect(x: dx - 0.34 * R, y: dy + 0.24 * R, width: 0.68 * R, height: 0.46 * R))
-
-    let nx = dx, ny = dy + 0.34 * R, nw = 0.10 * R
-    ctx.beginPath()
-    ctx.move(to: CGPoint(x: nx - nw, y: ny))
-    ctx.addLine(to: CGPoint(x: nx + nw, y: ny))
-    ctx.addLine(to: CGPoint(x: nx, y: ny + 0.08 * R))
-    ctx.closePath()
-    let nose = ctx.path
-    ctx.setFillColor(GCat.nose); ctx.fillPath()
-    if let nose { ctx.addPath(nose) }
-    ctx.setStrokeColor(GCat.nose); ctx.setLineWidth(R * 0.03); ctx.setLineJoin(.round); ctx.strokePath()
-
-    let my = ny + 0.08 * R
-    ctx.beginPath()
-    ctx.move(to: CGPoint(x: nx, y: my))
-    ctx.addLine(to: CGPoint(x: nx, y: my + 0.05 * R))
-    ctx.addQuadCurve(to: CGPoint(x: nx - 0.13 * R, y: my + 0.06 * R),
-                     control: CGPoint(x: nx - 0.06 * R, y: my + 0.14 * R))
-    ctx.move(to: CGPoint(x: nx, y: my + 0.05 * R))
-    ctx.addQuadCurve(to: CGPoint(x: nx + 0.13 * R, y: my + 0.06 * R),
-                     control: CGPoint(x: nx + 0.06 * R, y: my + 0.14 * R))
-    ctx.setStrokeColor(GCat.mouth); ctx.setLineWidth(max(1, R * 0.025)); ctx.strokePath()
+    ctx.addPath(CatShape.muzzle(R: R, face: face).cgPath)
+    ctx.setFillColor(fur.cream.cg()); ctx.fillPath()
+    let nose = CatShape.nose(R: R, face: face)
+    ctx.addPath(nose.cgPath); ctx.setFillColor(fur.nose.cg()); ctx.fillPath()
+    ctx.setLineJoin(.round)
+    gStroke(ctx, nose, color: fur.nose.cg(), width: R * 0.03)
+    gStroke(ctx, CatShape.mouth(R: R, face: face), color: fur.mouth.cg(), width: max(1, R * 0.025))
     ctx.restoreGState()
 }
 
@@ -421,18 +363,9 @@ private func drawCatWhiskersG(_ ctx: CGContext, R: CGFloat, dx: CGFloat, dy: CGF
                               t: Double, alpha: CGFloat) {
     guard alpha > 0.01 else { return }
     ctx.saveGState()
-    ctx.setStrokeColor(gHex("#FFFFFF", alpha: 0.9 * alpha))
-    ctx.setLineWidth(max(1, R * 0.02)); ctx.setLineCap(.round)
-    for s: CGFloat in [-1, 1] {
-        for i in 0..<3 {
-            let fi = CGFloat(i)
-            let y0 = dy + (0.42 + fi * 0.07) * R
-            let twitch = CGFloat(sin(t * 1.7 + Double(i))) * 0.012 * R
-            ctx.beginPath()
-            ctx.move(to: CGPoint(x: dx + s * 0.30 * R, y: y0))
-            ctx.addLine(to: CGPoint(x: dx + s * 0.98 * R, y: y0 + (fi - 1) * 0.09 * R + twitch))
-            ctx.strokePath()
-        }
+    ctx.setLineCap(.round)
+    for p in CatShape.whiskers(R: R, face: CatFace(dx: dx, dy: dy), time: CGFloat(t)) {
+        gStroke(ctx, p, color: gHex("#FFFFFF", alpha: 0.9 * alpha), width: max(1, R * 0.02))
     }
     ctx.restoreGState()
 }
