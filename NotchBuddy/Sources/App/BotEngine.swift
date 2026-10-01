@@ -1146,7 +1146,7 @@ final class BotEngine: ObservableObject {
             let fx = lerp(max(0.18, cos(eyeYaw)), 1, morph * 0.7)
             let fy = lerp(max(0.18, cp),          1, morph * 0.7)
 
-            let eyeMult: CGFloat = isMini ? 1.9 : 1.0
+            let eyeMult: CGFloat = isMini ? (character == .cat ? 1.4 : 1.9) : 1.0
             let ew = R * MochiConst.eyeW * es * eyeMult
             let eh = R * MochiConst.eyeH * es * eyeMult
 

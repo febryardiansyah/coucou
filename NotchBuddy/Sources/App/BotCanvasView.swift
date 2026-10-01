@@ -139,6 +139,7 @@ struct MiniBotCanvasView: View {
             Canvas { context, size in
                 let now = timeline.date.timeIntervalSinceReferenceDate
                 let dt = min(0.05, now - engine.lastTime)
+                engine.character = AppState.shared.botCharacter
                 engine.update(dt: dt)
                 engine.draw(context: context, size: size)
             }

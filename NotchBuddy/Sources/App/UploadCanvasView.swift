@@ -148,7 +148,7 @@ struct UploadCanvasView: View {
         }
 
         // ── Mochi ─────────────────────────────────────────────────
-        drawMochi(ctx: &c, f: f)
+        drawMochi(ctx: &c, f: f, wallTime: wallTime)
 
         // ── File / suction ────────────────────────────────────────
         if f.fileVisible { drawFile(ctx: &c, f: f) }
@@ -292,7 +292,7 @@ struct UploadCanvasView: View {
 
     // MARK: - Mochi (superellipse body + eyes + mouth)
 
-    private func drawMochi(ctx: inout GraphicsContext, f: USFrame) {
+    private func drawMochi(ctx: inout GraphicsContext, f: USFrame, wallTime: Double) {
         let R  = f.d / 2 / 1.04
         let m  = f.morph
         let mc = max(0, min(m, 1.0))
@@ -305,13 +305,18 @@ struct UploadCanvasView: View {
         let (bp, rx, ry) = usBodyPath(m: m, R: R)
 
         // ── Body gradient ──────────────────────────────────────────
-        let bodyGrad = Gradient(stops:[
-            .init(color: Color(hex:"#EDEDEF"), location:0),
-            .init(color: Color(hex:"#C4C5CA"), location:1)
-        ])
+        let isCat = AppState.shared.botCharacter == .cat
+        if isCat { drawCatBehind(ctx: c, R: CGFloat(R), mc: CGFloat(mc), wallTime: wallTime) }
+        let bodyGrad = isCat
+            ? Gradient(colors: [CatPalette.furTop, CatPalette.furBottom])
+            : Gradient(stops:[
+                .init(color: Color(hex:"#EDEDEF"), location:0),
+                .init(color: Color(hex:"#C4C5CA"), location:1)
+            ])
         c.fill(bp, with: .linearGradient(bodyGrad,
             startPoint:  CGPoint(x:  rx*0.7, y: -ry*0.9),
             endPoint:    CGPoint(x: -rx*0.8, y:  ry*0.9)))
+        if isCat { drawCatMarkings(ctx: c, path: bp, R: CGFloat(R), rx: CGFloat(rx), ry: CGFloat(ry), mc: CGFloat(mc), f: f) }
 
         // ── Edge shadow ────────────────────────────────────────────
         let shadowGrad = Gradient(stops:[
@@ -375,6 +380,129 @@ struct UploadCanvasView: View {
             var ec = eCtx
             ec.concatenate(CGAffineTransform(translationX: CGFloat(sd*sp+lx), y: CGFloat(ey+ly)))
             drawEyeShape(ctx: &ec, shape: f.eye, w: CGFloat(ew), h: CGFloat(eh))
+        }
+
+        if isCat { drawCatWhiskers(ctx: c, R: CGFloat(R), mc: CGFloat(mc), f: f, wallTime: wallTime) }
+    }
+
+    // MARK: - Cat (same look as the main bot; fades out as the body morphs into the box)
+
+    private func drawCatBehind(ctx: GraphicsContext, R: CGFloat, mc: CGFloat, wallTime: Double) {
+        let fade = 1 - min(1, mc * 2)
+        guard fade > 0.01 else { return }
+        var c = ctx
+        c.opacity = Double(fade)
+        let t = CGFloat(wallTime)
+        let flick = pow(max(0, sin(t * 0.8)), 24) * 0.07 * R
+
+        for s in [CGFloat(-1), 1] {
+            func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: s * x * R, y: y * R) }
+            let tipShift = s > 0 ? flick : 0
+            var outer = Path()
+            outer.move(to: pt(1.00, -0.42))
+            outer.addLine(to: CGPoint(x: s * 0.84 * R, y: -1.22 * R + tipShift))
+            outer.addLine(to: pt(0.26, -0.84))
+            outer.closeSubpath()
+            var inner = Path()
+            inner.move(to: pt(0.84, -0.56))
+            inner.addLine(to: CGPoint(x: s * 0.77 * R, y: -1.00 * R + tipShift))
+            inner.addLine(to: pt(0.44, -0.80))
+            inner.closeSubpath()
+
+            c.stroke(outer, with: .color(CatPalette.furBottom),
+                     style: StrokeStyle(lineWidth: R * 0.14, lineCap: .round, lineJoin: .round))
+            c.fill(outer, with: .linearGradient(
+                Gradient(colors: [CatPalette.furTop, CatPalette.furBottom]),
+                startPoint: CGPoint(x: 0, y: -1.2 * R), endPoint: CGPoint(x: 0, y: -0.4 * R)))
+            c.stroke(inner, with: .color(CatPalette.innerEar),
+                     style: StrokeStyle(lineWidth: R * 0.08, lineCap: .round, lineJoin: .round))
+            c.fill(inner, with: .color(CatPalette.innerEar))
+        }
+
+        let wag = sin(t * 2.6) * 0.14 * R
+        var tail = Path()
+        tail.move(to: CGPoint(x: 0.82 * R, y: 0.50 * R))
+        tail.addQuadCurve(to: CGPoint(x: 1.34 * R + wag * 0.4, y: -0.06 * R + wag),
+                          control: CGPoint(x: 1.46 * R, y: 0.62 * R))
+        c.stroke(tail, with: .color(CatPalette.stripe), style: StrokeStyle(lineWidth: R * 0.30, lineCap: .round))
+        c.stroke(tail, with: .color(CatPalette.furBottom), style: StrokeStyle(lineWidth: R * 0.22, lineCap: .round))
+    }
+
+    private func catLook(_ f: USFrame, R: CGFloat, rx: CGFloat) -> (dx: CGFloat, dy: CGFloat) {
+        (CGFloat(f.lookX) * rx * 0.3, CGFloat(f.lookY) * R * 0.1)
+    }
+
+    /// Stripes and muzzle, clipped to the body (before the eyes).
+    private func drawCatMarkings(ctx: GraphicsContext, path: Path, R: CGFloat, rx: CGFloat, ry: CGFloat,
+                                 mc: CGFloat, f: USFrame) {
+        guard mc < 0.5 else { return }
+        var c = ctx
+        c.clip(to: path)
+        c.opacity = Double(1 - mc * 2)
+        let (dx, dy) = catLook(f, R: R, rx: rx)
+
+        for i in -1...1 {
+            let x = CGFloat(i) * 0.26 * R + dx * 0.6
+            var stripe = Path()
+            stripe.move(to: CGPoint(x: x, y: -ry * 1.02))
+            stripe.addQuadCurve(to: CGPoint(x: x + CGFloat(i) * 0.03 * R, y: -ry * 0.46),
+                                control: CGPoint(x: x + CGFloat(i) * 0.08 * R, y: -ry * 0.74))
+            c.stroke(stripe, with: .color(CatPalette.stripe.opacity(0.85)),
+                     style: StrokeStyle(lineWidth: R * 0.09, lineCap: .round))
+        }
+        for sd in [CGFloat(-1), 1] {
+            for j in 0..<2 {
+                let y = ry * (0.10 + CGFloat(j) * 0.20)
+                var stripe = Path()
+                stripe.move(to: CGPoint(x: sd * rx * 1.02 + dx * 0.6, y: y))
+                stripe.addLine(to: CGPoint(x: sd * rx * 0.80 + dx * 0.6, y: y + ry * 0.05))
+                c.stroke(stripe, with: .color(CatPalette.stripe.opacity(0.85)),
+                         style: StrokeStyle(lineWidth: R * 0.08, lineCap: .round))
+            }
+        }
+
+        var muzzle = Path()
+        muzzle.addEllipse(in: CGRect(x: dx - 0.34 * R, y: dy + 0.24 * R, width: 0.68 * R, height: 0.46 * R))
+        c.fill(muzzle, with: .color(CatPalette.cream))
+
+        var nose = Path()
+        let nx = dx, ny = dy + 0.34 * R, nw = 0.10 * R
+        nose.move(to: CGPoint(x: nx - nw, y: ny))
+        nose.addLine(to: CGPoint(x: nx + nw, y: ny))
+        nose.addLine(to: CGPoint(x: nx, y: ny + 0.08 * R))
+        nose.closeSubpath()
+        c.fill(nose, with: .color(CatPalette.nose))
+        c.stroke(nose, with: .color(CatPalette.nose), style: StrokeStyle(lineWidth: R * 0.03, lineJoin: .round))
+
+        var mouth = Path()
+        let my = ny + 0.08 * R
+        mouth.move(to: CGPoint(x: nx, y: my))
+        mouth.addLine(to: CGPoint(x: nx, y: my + 0.05 * R))
+        mouth.addQuadCurve(to: CGPoint(x: nx - 0.13 * R, y: my + 0.06 * R),
+                           control: CGPoint(x: nx - 0.06 * R, y: my + 0.14 * R))
+        mouth.move(to: CGPoint(x: nx, y: my + 0.05 * R))
+        mouth.addQuadCurve(to: CGPoint(x: nx + 0.13 * R, y: my + 0.06 * R),
+                           control: CGPoint(x: nx + 0.06 * R, y: my + 0.14 * R))
+        c.stroke(mouth, with: .color(CatPalette.mouth),
+                 style: StrokeStyle(lineWidth: max(1, R * 0.025), lineCap: .round))
+    }
+
+    private func drawCatWhiskers(ctx: GraphicsContext, R: CGFloat, mc: CGFloat, f: USFrame, wallTime: Double) {
+        guard mc < 0.3 else { return }
+        var c = ctx
+        c.opacity = Double(1 - mc / 0.3)
+        let (dx, dy) = catLook(f, R: R, rx: R)
+        let t = CGFloat(wallTime)
+        for s in [CGFloat(-1), 1] {
+            for i in 0..<3 {
+                let y0 = dy + (0.42 + CGFloat(i) * 0.07) * R
+                let twitch = sin(t * 1.7 + CGFloat(i)) * 0.012 * R
+                var w = Path()
+                w.move(to: CGPoint(x: dx + s * 0.30 * R, y: y0))
+                w.addLine(to: CGPoint(x: dx + s * 0.98 * R, y: y0 + (CGFloat(i) - 1) * 0.09 * R + twitch))
+                c.stroke(w, with: .color(Color.white.opacity(0.9)),
+                         style: StrokeStyle(lineWidth: max(1, R * 0.02), lineCap: .round))
+            }
         }
     }
 

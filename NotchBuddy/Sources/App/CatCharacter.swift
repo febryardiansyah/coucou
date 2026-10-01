@@ -16,7 +16,7 @@ enum BotCharacter: String, CaseIterable, Identifiable {
     }
 }
 
-private enum CatPalette {
+enum CatPalette {
     static let furTop    = Color(red: 1.000, green: 0.702, blue: 0.318)   // #FFB351
     static let furBottom = Color(red: 0.937, green: 0.451, blue: 0.106)   // #EF731B
     static let stripe    = Color(red: 0.741, green: 0.325, blue: 0.055)   // #BD530E
@@ -30,7 +30,18 @@ private enum CatPalette {
 
 extension BotEngine {
 
-    var isCatActive: Bool { character == .cat && !isMini }
+    var isCatActive: Bool { character == .cat }
+
+    /// Fur colours. Mini bots (integration pills) keep their brand colour instead of the default orange.
+    private var catFur: (top: Color, bottom: Color, stripe: Color, innerEar: Color) {
+        guard isMini, let bc = bodyColor, let c = bc.components, c.count >= 3 else {
+            return (CatPalette.furTop, CatPalette.furBottom, CatPalette.stripe, CatPalette.innerEar)
+        }
+        func mix(_ t: CGFloat, _ to: CGFloat) -> Color {
+            Color(red: c[0] + (to - c[0]) * t, green: c[1] + (to - c[1]) * t, blue: c[2] + (to - c[2]) * t)
+        }
+        return (mix(0.35, 1), Color(cgColor: bc), mix(0.30, 0), mix(0.55, 1))
+    }
 
     /// Ears and tail — drawn before the body so the body covers their roots.
     func drawCatBehind(ctx: GraphicsContext, R: CGFloat) {
@@ -39,6 +50,7 @@ extension BotEngine {
         var c = ctx
         c.opacity = Double(fade)
 
+        let fur = catFur
         let now = CGFloat(CACurrentMediaTime())
         let droop: CGFloat = (state == .sleeping) ? 0.16 : 0
         let lean = sin(yaw) * 0.10 * R
@@ -63,12 +75,12 @@ extension BotEngine {
             inner.closeSubpath()
 
             let style = StrokeStyle(lineWidth: R * 0.14, lineCap: .round, lineJoin: .round)
-            c.stroke(outer, with: .color(CatPalette.furBottom), style: style)
+            c.stroke(outer, with: .color(fur.bottom), style: style)
             c.fill(outer, with: .linearGradient(
-                Gradient(colors: [CatPalette.furTop, CatPalette.furBottom]),
+                Gradient(colors: [fur.top, fur.bottom]),
                 startPoint: CGPoint(x: 0, y: -1.2 * R), endPoint: CGPoint(x: 0, y: -0.4 * R)))
-            c.stroke(inner, with: .color(CatPalette.innerEar), style: StrokeStyle(lineWidth: R * 0.08, lineCap: .round, lineJoin: .round))
-            c.fill(inner, with: .color(CatPalette.innerEar))
+            c.stroke(inner, with: .color(fur.innerEar), style: StrokeStyle(lineWidth: R * 0.08, lineCap: .round, lineJoin: .round))
+            c.fill(inner, with: .color(fur.innerEar))
         }
 
         // Tail on the right, wagging
@@ -77,20 +89,21 @@ extension BotEngine {
         tail.move(to: CGPoint(x: 0.82 * R, y: 0.50 * R))
         tail.addQuadCurve(to: CGPoint(x: 1.34 * R + wag * 0.4, y: -0.06 * R + wag),
                           control: CGPoint(x: 1.46 * R, y: 0.62 * R))
-        c.stroke(tail, with: .color(CatPalette.stripe), style: StrokeStyle(lineWidth: R * 0.30, lineCap: .round))
-        c.stroke(tail, with: .color(CatPalette.furBottom), style: StrokeStyle(lineWidth: R * 0.22, lineCap: .round))
+        c.stroke(tail, with: .color(fur.stripe), style: StrokeStyle(lineWidth: R * 0.30, lineCap: .round))
+        c.stroke(tail, with: .color(fur.bottom), style: StrokeStyle(lineWidth: R * 0.22, lineCap: .round))
     }
 
     /// Orange fur with tabby stripes. State colour is kept as a light tint so states stay readable.
     func drawCatBody(ctx: GraphicsContext, path: Path, R: CGFloat, rx: CGFloat, ry: CGFloat) {
         var c = ctx
+        let fur = catFur
         c.fill(path, with: .linearGradient(
-            Gradient(colors: [CatPalette.furTop, CatPalette.furBottom]),
+            Gradient(colors: [fur.top, fur.bottom]),
             startPoint: CGPoint(x: rx * 0.5, y: -ry * 0.9),
             endPoint: CGPoint(x: -rx * 0.4, y: ry * 0.95)))
 
         // A focused integration's brand colour (not the default off-white) lightly tints the fur
-        if let bc = bodyColor, let comps = bc.components, comps.count >= 3,
+        if !isMini, let bc = bodyColor, let comps = bc.components, comps.count >= 3,
            min(comps[0], comps[1], comps[2]) < 0.85 {
             c.fill(path, with: .color(Color(cgColor: bc).opacity(0.35 * Double(1 - morph))))
         }
@@ -116,7 +129,7 @@ extension BotEngine {
                 stripe.move(to: CGPoint(x: x, y: -ry * 1.02))
                 stripe.addQuadCurve(to: CGPoint(x: x + CGFloat(i) * 0.03 * R, y: -ry * 0.46),
                                     control: CGPoint(x: x + CGFloat(i) * 0.08 * R, y: -ry * 0.74))
-                s.stroke(stripe, with: .color(CatPalette.stripe.opacity(0.85)),
+                s.stroke(stripe, with: .color(fur.stripe.opacity(0.85)),
                          style: StrokeStyle(lineWidth: R * 0.09, lineCap: .round))
             }
             // Cheek stripes
@@ -126,7 +139,7 @@ extension BotEngine {
                     var stripe = Path()
                     stripe.move(to: CGPoint(x: CGFloat(sd) * rx * 1.02 + dx, y: y))
                     stripe.addLine(to: CGPoint(x: CGFloat(sd) * rx * 0.80 + dx, y: y + ry * 0.05))
-                    s.stroke(stripe, with: .color(CatPalette.stripe.opacity(0.85)),
+                    s.stroke(stripe, with: .color(fur.stripe.opacity(0.85)),
                              style: StrokeStyle(lineWidth: R * 0.08, lineCap: .round))
                 }
             }
