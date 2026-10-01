@@ -832,20 +832,12 @@ struct ChatBubble: View {
         HStack(alignment: .top) {
             if message.role == .user {
                 Spacer(minLength: 32)
-                Text(message.content)
-                    .font(.system(size: 12.5))
-                    .foregroundColor(Color(hex: "#F1F2F4"))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                MarkdownText(source: message.content, color: Color(hex: "#F1F2F4"))
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .background(Color.white.opacity(0.13))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
-                Text(message.content)
-                    .font(.system(size: 12.5))
-                    .foregroundColor(Color(hex: "#B0B5BE"))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                MarkdownText(source: message.content)
                 Spacer(minLength: 8)
             }
         }

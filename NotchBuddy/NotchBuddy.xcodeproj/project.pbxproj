@@ -38,6 +38,8 @@
 		62C4EE3F74DAA59764729E62 /* UploadCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B241B043223AFBBFB7418A5E /* UploadCanvasView.swift */; };
 		651FA3F09608DE5D02D61CCE /* BotCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A29F4C0B02BE91654D02AA0C /* BotCanvasView.swift */; };
 		68A950E3C23FD612639D9776 /* IslandViewContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA02B08886939FF6FE0475DD /* IslandViewContent.swift */; };
+		70601F7CE221EAAECFA09A72 /* MarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 704D272C4CA04EB75D20BDFE /* MarkdownView.swift */; };
+		77EF114C300BDEA468811E2F /* MarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 704D272C4CA04EB75D20BDFE /* MarkdownView.swift */; };
 		78B3C6814431B2DD9D1F4949 /* SoundEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BE21C2B315D37AA70ED45E9 /* SoundEngine.swift */; };
 		78FCEDC8F78B683AB10E6529 /* NotionPoller.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE03E03D1804B0B92C5C2DAD /* NotionPoller.swift */; };
 		865B0BEDF549C9716BD13E3B /* EditingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EB234259374C473AEBC708F /* EditingView.swift */; };
@@ -89,6 +91,7 @@
 		5824498146F8976D9865C165 /* CatCharacter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatCharacter.swift; sourceTree = "<group>"; };
 		61B5FDDE03F5F711146937E2 /* ResendPoller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResendPoller.swift; sourceTree = "<group>"; };
 		6FD65943C32E150F1CD65C31 /* UploadSequenceEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadSequenceEngine.swift; sourceTree = "<group>"; };
+		704D272C4CA04EB75D20BDFE /* MarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownView.swift; sourceTree = "<group>"; };
 		71718D1B87A39A4879DD2A9D /* VercelPoller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VercelPoller.swift; sourceTree = "<group>"; };
 		73FDB7A34815BD01862A2EF2 /* EditPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditPreview.swift; sourceTree = "<group>"; };
 		79D8DD79C3DD9BBC584B3CB2 /* HookServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HookServer.swift; sourceTree = "<group>"; };
@@ -137,6 +140,7 @@
 				FA02B08886939FF6FE0475DD /* IslandViewContent.swift */,
 				D710BD7834228045869D0184 /* IslandWindowController.swift */,
 				44BCD032D755BB0B153FFF7C /* LLMBackends.swift */,
+				704D272C4CA04EB75D20BDFE /* MarkdownView.swift */,
 				B89DA1A0C21AE3535A1760BB /* N8nPoller.swift */,
 				F1BD8F3CAA60CF37640759E1 /* NotchBuddyApp.swift */,
 				BE03E03D1804B0B92C5C2DAD /* NotionPoller.swift */,
@@ -310,6 +314,7 @@
 				065FCE817315454DE3F85F25 /* IslandViewContent.swift in Sources */,
 				091EC3B2F1060D7EE1317E4E /* IslandWindowController.swift in Sources */,
 				D2E13E127755AC80EB8B6CCC /* LLMBackends.swift in Sources */,
+				77EF114C300BDEA468811E2F /* MarkdownView.swift in Sources */,
 				0A267EE2955C7AD8E02A296C /* N8nPoller.swift in Sources */,
 				06BF5FD95E03010CAFDBF2D0 /* NotchBuddyApp.swift in Sources */,
 				2F36E3C6C073E968A682AFA4 /* NotionPoller.swift in Sources */,
@@ -348,6 +353,7 @@
 				68A950E3C23FD612639D9776 /* IslandViewContent.swift in Sources */,
 				C61DDE2EC5FDDB39E4AA3B34 /* IslandWindowController.swift in Sources */,
 				CF83ADA392884EB27FB38519 /* LLMBackends.swift in Sources */,
+				70601F7CE221EAAECFA09A72 /* MarkdownView.swift in Sources */,
 				160EDB9D06275E2607DA5151 /* N8nPoller.swift in Sources */,
 				DE05D09A32117582AC93A24A /* NotchBuddyApp.swift in Sources */,
 				78FCEDC8F78B683AB10E6529 /* NotionPoller.swift in Sources */,
